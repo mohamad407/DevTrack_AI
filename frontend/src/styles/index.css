@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    background-color: #060812;
+    background-image:
+      radial-gradient(circle at 15% 10%, rgba(124, 92, 252, 0.16), transparent 42%),
+      radial-gradient(circle at 85% 30%, rgba(34, 211, 238, 0.12), transparent 40%),
+      radial-gradient(circle at 50% 90%, rgba(79, 70, 229, 0.14), transparent 45%);
+    background-attachment: fixed;
+  }
+  h1, h2, h3, h4, .font-display {
+    font-family: 'Space Grotesk', sans-serif;
+  }
+  ::selection {
+    background: rgba(124, 92, 252, 0.35);
+  }
+  *:focus-visible {
+    outline: 2px solid #9B85FF;
+    outline-offset: 2px;
+  }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.25); border-radius: 8px; }
+}
+
+@layer components {
+  .glass {
+    @apply bg-white/[0.04] backdrop-blur-xl border border-white/[0.08];
+  }
+  .glass-card {
+    @apply glass rounded-2xl shadow-glass;
+  }
+  .glass-panel {
+    @apply glass rounded-3xl shadow-glass;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-aurora px-5 py-2.5 font-semibold text-white shadow-glow transition-transform duration-200 hover:scale-[1.03] active:scale-[0.98];
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-5 py-2.5 font-medium text-ink-100 backdrop-blur-md transition-colors hover:bg-white/[0.08];
+  }
+  .input-glass {
+    @apply w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2.5 text-ink-100 placeholder:text-ink-500 outline-none transition-colors focus:border-primary-light/60 focus:bg-white/[0.06];
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-0.5 text-xs font-medium;
+  }
+  .text-gradient {
+    @apply bg-aurora bg-clip-text text-transparent;
+  }
+  .skeleton {
+    @apply relative overflow-hidden rounded-lg bg-white/[0.06];
+  }
+  .skeleton::after {
+    content: '';
+    @apply absolute inset-0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+    background-size: 200% 100%;
+    animation: shimmer 1.6s linear infinite;
+  }
+}
