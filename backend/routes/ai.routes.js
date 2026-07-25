@@ -139,8 +139,15 @@ router.post('/chat', async (req, res, next) => {
   try {
     const { message, history = [] } = req.body;
     const model = getModel();
+    // Gemini requires chat history to start with a 'user' message.
+    // The frontend seeds the conversation with a hardcoded assistant
+    // greeting (role 'model'), so drop any leading model messages.
+    const trimmedHistory = [...history];
+    while (trimmedHistory.length && trimmedHistory[0].role !== 'user') {
+      trimmedHistory.shift();
+    }
     const chat = model.startChat({
-      history: history.map((h) => ({ role: h.role, parts: [{ text: h.text }] })),
+      history: trimmedHistory.map((h) => ({ role: h.role, parts: [{ text: h.text }] })),
       systemInstruction:
         'You are the DevTrack AI assistant, an expert in Agile, Scrum, and DevOps practices. Be concise and practical.',
     });
