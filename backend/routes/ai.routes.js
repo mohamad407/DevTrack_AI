@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import * as aiController from '../controllers/aiController.js'
-import { requireAuth } from '../middleware/auth.middleware.js'
+import { requireAuth } from '../middleware/auth.js'
 // ^ If you already have your own auth middleware file (e.g. middleware/authMiddleware.js
 // exporting `protect`), just swap this import to match your existing one instead of
 // adding a second auth file — don't run two competing auth middlewares.
