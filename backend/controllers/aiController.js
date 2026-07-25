@@ -28,7 +28,7 @@ export async function generateStory(req, res) {
     const { featureDescription, project } = req.body
     if (!featureDescription) return res.status(400).json({ error: 'featureDescription is required' })
     const story = await aiService.generateUserStory(featureDescription, project)
-    res.json({ story })
+    res.json(story)
   } catch (err) {
     handleAiError(res, err)
   }
