@@ -11,7 +11,7 @@ import { Server } from 'socket.io';
 import connectDB from './config/db.js';
 import { registerSocketHandlers } from './socket.js';
 
-import authRoutes from './routes/auth.routes.js';
+import authRoutes from './utility/auth.routes.js';
 import userRoutes from './routes/user.routes.js';
 import projectRoutes from './routes/project.routes.js';
 import backlogRoutes from './routes/backlog.routes.js';
