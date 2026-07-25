@@ -8,7 +8,18 @@ router.use(protect);
 // Connect a GitHub repo to the project
 router.put('/:projectId/repo', requireProjectRole(['Admin']), async (req, res, next) => {
   try {
-    req.project.githubRepo = req.body.githubRepo; // "owner/repo"
+    let repoInput = req.body.githubRepo || '';
+
+    // Accept either a full GitHub URL or a plain "owner/repo" string.
+    // Strip protocol + domain, trailing ".git", and any trailing slash
+    // so what gets saved is always a clean "owner/repo".
+    repoInput = repoInput
+      .trim()
+      .replace(/^https?:\/\/(www\.)?github\.com\//i, '')
+      .replace(/\.git$/i, '')
+      .replace(/\/+$/, '');
+
+    req.project.githubRepo = repoInput; // "owner/repo"
     await req.project.save();
     res.json({ project: req.project });
   } catch (err) {
@@ -29,7 +40,6 @@ router.get('/:projectId/pipeline', requireProjectRole([]), async (req, res, next
     if (!process.env.GITHUB_TOKEN) {
       return res.status(503).json({ message: 'GITHUB_TOKEN not configured on the server' });
     }
-
     const resp = await fetch(`https://api.github.com/repos/${req.project.githubRepo}/actions/runs?per_page=15`, {
       headers: {
         Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
@@ -38,7 +48,6 @@ router.get('/:projectId/pipeline', requireProjectRole([]), async (req, res, next
     });
     if (!resp.ok) throw new Error(`GitHub API error: ${resp.status}`);
     const data = await resp.json();
-
     const runs = (data.workflow_runs || []).map((r) => ({
       id: r.id,
       name: r.name,
@@ -49,7 +58,6 @@ router.get('/:projectId/pipeline', requireProjectRole([]), async (req, res, next
       startedAt: r.run_started_at,
       url: r.html_url,
     }));
-
     res.json({ connected: true, runs });
   } catch (err) {
     next(err);
