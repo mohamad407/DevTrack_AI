@@ -25,9 +25,9 @@ export async function chat(req, res) {
 
 export async function generateStory(req, res) {
   try {
-    const { prompt } = req.body
-    if (!prompt) return res.status(400).json({ error: 'prompt is required' })
-    const story = await aiService.generateUserStory(prompt)
+    const { featureDescription, project } = req.body
+    if (!featureDescription) return res.status(400).json({ error: 'featureDescription is required' })
+    const story = await aiService.generateUserStory(featureDescription, project)
     res.json({ story })
   } catch (err) {
     handleAiError(res, err)
