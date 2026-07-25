@@ -11,14 +11,14 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [needsVerification, setNeedsVerification] = useState(false);
 
-  const exchangeSession = useCallback(async (fbUser) => {
+  const exchangeSession = useCallback(async (fbUser, forceRefresh = false) => {
     if (!fbUser) {
       setUser(null);
       setLoading(false);
       return;
     }
     try {
-      const idToken = await fbUser.getIdToken();
+      const idToken = await fbUser.getIdToken(forceRefresh);
       const { data } = await api.post('/auth/firebase-session', {
         idToken,
         name: fbUser.displayName,
@@ -51,7 +51,7 @@ export const AuthProvider = ({ children }) => {
     return unsubscribe;
   }, [exchangeSession]);
 
-  const refreshSession = () => firebaseUser && exchangeSession(firebaseUser);
+  const refreshSession = () => firebaseUser && exchangeSession(firebaseUser, true);
 
   const logout = async () => {
     await firebaseLogout();
