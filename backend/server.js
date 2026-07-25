@@ -9,7 +9,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 
 import connectDB from './config/db.js';
-import { registerSocketHandlers } from './config/socket.js';
+import { registerSocketHandlers } from './socket.js';
 
 import authRoutes from './routes/auth.routes.js';
 import userRoutes from './routes/user.routes.js';
