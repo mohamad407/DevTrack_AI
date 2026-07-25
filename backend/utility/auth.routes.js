@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import User from '../models/User.model.js';
 import { verifyFirebaseToken } from '../config/firebase.js';
-import { signAccessToken, signRefreshToken } from '../utils/token.js';
+import { signAccessToken, signRefreshToken } from '../utility/token.js';
 import { protect } from '../middleware/auth.middleware.js';
 
 const router = Router();
