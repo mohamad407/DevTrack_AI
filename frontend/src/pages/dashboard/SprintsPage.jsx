@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { Plus, X, Target, MessageSquare } from 'lucide-react';
+import { Plus, X, Target, MessageSquare, ChevronDown, ChevronUp, CornerUpLeft } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../../services/api.js';
 import { SkeletonCard } from '../../components/common/Skeleton.jsx';
@@ -12,6 +12,8 @@ export default function SprintsPage() {
   const [sprints, setSprints] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [retroSprint, setRetroSprint] = useState(null);
+  const [expandedId, setExpandedId] = useState(null);
+  const [sprintStories, setSprintStories] = useState(null);
   const [form, setForm] = useState({ name: '', goal: '', startDate: '', endDate: '' });
   const [retroForm, setRetroForm] = useState({ wentWell: '', toImprove: '', actionItems: '' });
   const [saving, setSaving] = useState(false);
@@ -20,6 +22,32 @@ export default function SprintsPage() {
     api.get('/sprints', { params: { project: projectId } }).then(({ data }) => setSprints(data.sprints)).catch(() => setSprints([]));
 
   useEffect(() => { load(); }, [projectId]);
+
+  // Sprint Details: shows exactly which backlog items are assigned to this sprint.
+  const toggleDetails = async (sprintId) => {
+    if (expandedId === sprintId) {
+      setExpandedId(null);
+      return;
+    }
+    setExpandedId(sprintId);
+    setSprintStories(null);
+    try {
+      const { data } = await api.get('/backlog', { params: { project: projectId, sprint: sprintId } });
+      setSprintStories(data.stories);
+    } catch {
+      setSprintStories([]);
+    }
+  };
+
+  const unassignStory = async (storyId) => {
+    try {
+      await api.put(`/backlog/${storyId}/unassign-sprint`, { project: projectId });
+      toast.success('Moved back to Product Backlog');
+      setSprintStories((prev) => prev.filter((s) => s._id !== storyId));
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Could not unassign');
+    }
+  };
 
   const createSprint = async (e) => {
     e.preventDefault();
@@ -111,7 +139,37 @@ export default function SprintsPage() {
                 >
                   <MessageSquare size={13} /> Retrospective
                 </button>
+                <button onClick={() => toggleDetails(s._id)} className="btn-ghost ml-auto px-3 py-1.5 text-xs">
+                  {expandedId === s._id ? <ChevronUp size={13} /> : <ChevronDown size={13} />} Sprint details
+                </button>
               </div>
+
+              {expandedId === s._id && (
+                <div className="mt-4 space-y-2 border-t border-white/[0.06] pt-4">
+                  {s.status === 'Completed' && (
+                    <p className="mb-2 text-xs text-ink-500">This sprint is completed — no new items can be added.</p>
+                  )}
+                  {sprintStories === null ? (
+                    <div className="skeleton h-16 w-full" />
+                  ) : sprintStories.length === 0 ? (
+                    <p className="py-4 text-center text-xs text-ink-500">No backlog items assigned to this sprint yet.</p>
+                  ) : (
+                    sprintStories.map((story) => (
+                      <div key={story._id} className="flex items-center justify-between rounded-xl border border-white/[0.06] p-3 text-sm">
+                        <div>
+                          <p className="font-medium">{story.title}</p>
+                          <p className="text-xs text-ink-500">{story.storyPoints} pts · {story.priority} · {story.status}</p>
+                        </div>
+                        {s.status !== 'Completed' && (
+                          <button onClick={() => unassignStory(story._id)} className="btn-ghost px-2.5 py-1 text-xs text-warning">
+                            <CornerUpLeft size={12} /> Unassign
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </div>
