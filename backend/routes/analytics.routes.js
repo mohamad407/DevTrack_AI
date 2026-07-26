@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import Sprint from '../models/Sprint.model.js';
 import Story from '../models/Story.model.js';
-import Task from '../models/Task.model.js';
 import { Deployment } from '../models/Misc.models.js';
 import { protect, requireProjectRole } from '../middleware/auth.middleware.js';
 
@@ -50,16 +49,18 @@ function computeIdealBurndown(sprint) {
   }));
 }
 
-// Team productivity: tasks completed per member (last 30 days)
+// Team productivity: stories completed per member (last 30 days).
+// Uses Story, not Task — the Kanban board now moves Story documents through columns
+// (Feature 1 upgrade), so Task is no longer where "Done" work actually lands.
 router.get('/:projectId/productivity', requireProjectRole([]), async (req, res, next) => {
   try {
     const since = new Date(Date.now() - 30 * 86400000);
-    const tasks = await Task.find({ project: req.project._id, status: 'Done', updatedAt: { $gte: since } })
+    const stories = await Story.find({ project: req.project._id, status: 'Done', updatedAt: { $gte: since } })
       .populate('assignee', 'name avatarUrl');
 
     const byMember = {};
-    tasks.forEach((t) => {
-      const key = t.assignee?.name || 'Unassigned';
+    stories.forEach((s) => {
+      const key = s.assignee?.name || 'Unassigned';
       byMember[key] = (byMember[key] || 0) + 1;
     });
     res.json({ productivity: Object.entries(byMember).map(([member, tasksCompleted]) => ({ member, tasksCompleted })) });
@@ -91,13 +92,13 @@ router.get('/:projectId/devops-metrics', requireProjectRole([]), async (req, res
   }
 });
 
-// Task completion rate (overall)
+// Story/task completion rate (overall) — also switched from Task to Story, same reason as above.
 router.get('/:projectId/task-completion', requireProjectRole([]), async (req, res, next) => {
   try {
-    const tasks = await Task.find({ project: req.project._id });
-    const total = tasks.length || 1;
-    const done = tasks.filter((t) => t.status === 'Done').length;
-    res.json({ total: tasks.length, done, completionRate: Math.round((done / total) * 100) });
+    const stories = await Story.find({ project: req.project._id });
+    const total = stories.length || 1;
+    const done = stories.filter((s) => s.status === 'Done').length;
+    res.json({ total: stories.length, done, completionRate: Math.round((done / total) * 100) });
   } catch (err) {
     next(err);
   }
