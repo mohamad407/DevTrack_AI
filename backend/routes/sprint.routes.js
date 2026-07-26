@@ -42,21 +42,37 @@ router.put('/:id', requireProjectRole(['Admin', 'Scrum Master']), async (req, re
       req.body,
       { new: true }
     );
+    // Notify connected clients (e.g. Kanban board) that this sprint's status changed —
+    // most importantly Planned -> Active, which is when its stories should appear on the board.
+    req.app.get('io').to(`project:${req.project._id}`).emit('sprint:updated', sprint);
     res.json({ sprint });
   } catch (err) {
     next(err);
   }
 });
 
-// Add backlog items to a sprint
+// Add backlog items to a sprint.
+// Guard: a Completed sprint is closed for new work — block silently-wrong assignments here too,
+// on top of the equivalent guards in backlog.routes.js, since this endpoint is a second entry point
+// into the same operation (Sprint Details "add from backlog" UI).
 router.post('/:id/items', requireProjectRole(['Admin', 'Scrum Master']), async (req, res, next) => {
   try {
+    const sprint = await Sprint.findOne({ _id: req.params.id, project: req.project._id });
+    if (!sprint) return res.status(404).json({ message: 'Sprint not found' });
+    if (sprint.status === 'Completed') {
+      return res.status(400).json({ message: 'Cannot add stories to a completed sprint' });
+    }
+
     const { storyIds } = req.body;
     await Story.updateMany(
       { _id: { $in: storyIds }, project: req.project._id },
       { $set: { sprint: req.params.id, status: 'To Do' } }
     );
-    res.json({ message: 'Stories added to sprint' });
+
+    const stories = await Story.find({ _id: { $in: storyIds } }).populate('assignee', 'name avatarUrl');
+    stories.forEach((s) => req.app.get('io').to(`project:${req.project._id}`).emit('story:updated', s));
+
+    res.json({ message: 'Stories added to sprint', stories });
   } catch (err) {
     next(err);
   }
