@@ -3,6 +3,7 @@ import {
   LayoutDashboard, FolderKanban, ListTodo, KanbanSquare, CalendarRange,
   LineChart, GitBranch, Users, Bot, ShieldCheck, GitBranchPlus,
 } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext.jsx';
 
 const baseLinks = [
   { to: '/dashboard', label: 'Overview', icon: LayoutDashboard, end: true },
@@ -21,6 +22,8 @@ const projectLinks = (id) => [
 
 export default function Sidebar({ open, onClose }) {
   const { projectId } = useParams();
+  const { user } = useAuth();
+  const isSystemAdmin = user?.systemRole === 'admin';
 
   const linkClasses = ({ isActive }) =>
     `flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition-colors ${
@@ -67,12 +70,14 @@ export default function Sidebar({ open, onClose }) {
           </>
         )}
 
-        <div className="absolute bottom-4 left-4 right-4">
-          <NavLink to="/dashboard/admin" className={linkClasses}>
-            <ShieldCheck size={17} />
-            Admin panel
-          </NavLink>
-        </div>
+        {isSystemAdmin && (
+          <div className="absolute bottom-4 left-4 right-4">
+            <NavLink to="/dashboard/admin" className={linkClasses}>
+              <ShieldCheck size={17} />
+              Admin panel
+            </NavLink>
+          </div>
+        )}
       </aside>
     </>
   );
