@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import compression from 'compression';
@@ -43,11 +44,14 @@ app.set('io', io);
 // ----------------------------
 app.use(helmet({ crossOriginResourcePolicy: false }));
 
+// NOTE: origin must be an exact URL (not '*') for credentials/cookies to work.
+// Set CLIENT_URL in your backend .env, e.g. https://dev-track-ai-drab.vercel.app
 app.use(cors({
-  origin: process.env.CLIENT_URL || '*',
+  origin: process.env.CLIENT_URL || 'http://localhost:5173',
   credentials: true,
 }));
 
+app.use(cookieParser());
 app.use(compression());
 
 app.use(express.json({
