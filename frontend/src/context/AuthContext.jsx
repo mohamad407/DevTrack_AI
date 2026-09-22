@@ -28,8 +28,9 @@ export const AuthProvider = ({ children }) => {
         setNeedsVerification(true);
         setUser(null);
       } else {
+        // withCredentials on the api client means the httpOnly refreshToken
+        // cookie is set by the server automatically — nothing to store here.
         localStorage.setItem('devtrack_access_token', data.accessToken);
-        localStorage.setItem('devtrack_refresh_token', data.refreshToken);
         setUser(data.user);
         setNeedsVerification(false);
         connectSocket();
@@ -55,8 +56,12 @@ export const AuthProvider = ({ children }) => {
 
   const logout = async () => {
     await firebaseLogout();
+    try {
+      await api.post('/auth/logout'); // clears the httpOnly refreshToken cookie server-side
+    } catch {
+      // best-effort; still clear local state below
+    }
     localStorage.removeItem('devtrack_access_token');
-    localStorage.removeItem('devtrack_refresh_token');
     disconnectSocket();
     setUser(null);
   };
