@@ -47,9 +47,18 @@ router.post('/firebase-session', async (req, res, next) => {
     const accessToken = signAccessToken(user);
     const refreshToken = signRefreshToken(user);
 
+    // Refresh token lives in an httpOnly cookie only — never in the JSON body
+    // or localStorage, so client-side JS (and any XSS) can't read it.
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30d, matches JWT_REFRESH_EXPIRES_IN default
+      path: '/api/auth',
+    });
+
     res.json({
       accessToken,
-      refreshToken,
       user: {
         id: user._id,
         name: user.name,
@@ -64,18 +73,37 @@ router.post('/firebase-session', async (req, res, next) => {
   }
 });
 
-/** POST /api/auth/refresh - exchange a refresh token for a new access token */
+/** POST /api/auth/refresh - exchange the httpOnly refresh cookie for a new access token */
 router.post('/refresh', async (req, res, next) => {
   try {
     const jwt = (await import('jsonwebtoken')).default;
-    const { refreshToken } = req.body;
+    const refreshToken = req.cookies?.refreshToken;
+    if (!refreshToken) return res.status(401).json({ message: 'No refresh token provided' });
+
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
     const user = await User.findById(decoded.id);
     if (!user) return res.status(401).json({ message: 'Invalid refresh token' });
+
+    // Rotate the refresh cookie on each use.
+    const newRefreshToken = signRefreshToken(user);
+    res.cookie('refreshToken', newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      path: '/api/auth',
+    });
+
     res.json({ accessToken: signAccessToken(user) });
   } catch (err) {
     res.status(401).json({ message: 'Invalid or expired refresh token' });
   }
+});
+
+/** POST /api/auth/logout - clears the httpOnly refresh cookie */
+router.post('/logout', (req, res) => {
+  res.clearCookie('refreshToken', { path: '/api/auth' });
+  res.status(200).json({ message: 'Logged out' });
 });
 
 /**
