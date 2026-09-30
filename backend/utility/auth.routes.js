@@ -35,6 +35,24 @@ router.post('/firebase-session', async (req, res, next) => {
     }
 
     user.lastLoginAt = new Date();
+
+    // --- Admin allowlist (env-controlled, no manual DB edits ever needed) ---
+    // Set ADMIN_EMAILS in your backend .env / Render environment as a comma-separated
+    // list, e.g. ADMIN_EMAILS=you@example.com,cofounder@example.com
+    // Anyone logging in with a matching, verified email is automatically promoted
+    // to systemRole: 'admin'. This runs on every login, so adding a new email to the
+    // env var + redeploying is all it takes — no console, no scripts, no Atlas UI.
+    // It only ever promotes UP, never demotes — removing an email from the list does
+    // not strip existing admins; use the Admin Panel's own role management for that.
+    const adminAllowlist = (process.env.ADMIN_EMAILS || '')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+
+    if (decoded.email_verified && adminAllowlist.includes(user.email.toLowerCase()) && user.systemRole !== 'admin') {
+      user.systemRole = 'admin';
+    }
+
     await user.save();
 
     if (!user.isEmailVerified) {
@@ -47,18 +65,9 @@ router.post('/firebase-session', async (req, res, next) => {
     const accessToken = signAccessToken(user);
     const refreshToken = signRefreshToken(user);
 
-    // Refresh token lives in an httpOnly cookie only — never in the JSON body
-    // or localStorage, so client-side JS (and any XSS) can't read it.
-    res.cookie('refreshToken', refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30d, matches JWT_REFRESH_EXPIRES_IN default
-      path: '/api/auth',
-    });
-
     res.json({
       accessToken,
+      refreshToken,
       user: {
         id: user._id,
         name: user.name,
@@ -73,37 +82,18 @@ router.post('/firebase-session', async (req, res, next) => {
   }
 });
 
-/** POST /api/auth/refresh - exchange the httpOnly refresh cookie for a new access token */
+/** POST /api/auth/refresh - exchange a refresh token for a new access token */
 router.post('/refresh', async (req, res, next) => {
   try {
     const jwt = (await import('jsonwebtoken')).default;
-    const refreshToken = req.cookies?.refreshToken;
-    if (!refreshToken) return res.status(401).json({ message: 'No refresh token provided' });
-
+    const { refreshToken } = req.body;
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
     const user = await User.findById(decoded.id);
     if (!user) return res.status(401).json({ message: 'Invalid refresh token' });
-
-    // Rotate the refresh cookie on each use.
-    const newRefreshToken = signRefreshToken(user);
-    res.cookie('refreshToken', newRefreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-      path: '/api/auth',
-    });
-
     res.json({ accessToken: signAccessToken(user) });
   } catch (err) {
     res.status(401).json({ message: 'Invalid or expired refresh token' });
   }
-});
-
-/** POST /api/auth/logout - clears the httpOnly refresh cookie */
-router.post('/logout', (req, res) => {
-  res.clearCookie('refreshToken', { path: '/api/auth' });
-  res.status(200).json({ message: 'Logged out' });
 });
 
 /**
@@ -117,9 +107,17 @@ router.post('/forgot-password/check', async (req, res) => {
   res.json({ exists: !!exists });
 });
 
-/** GET /api/auth/me - current session profile */
+/**
+ * GET /api/auth/me - current session profile
+ * Returns an explicit whitelist of fields only — never the raw Mongoose document.
+ * This is deliberate defense-in-depth: even though passwordHash etc. already use
+ * `select: false` on the schema, this guarantees that if someone adds a new
+ * sensitive field to User.model.js later and forgets to exclude it, it still
+ * can't leak over this response by accident.
+ */
 router.get('/me', protect, async (req, res) => {
-  res.json({ user: req.user });
+  const { _id, name, email, avatarUrl, systemRole, isEmailVerified, status, lastLoginAt } = req.user;
+  res.json({ user: { id: _id, name, email, avatarUrl, systemRole, isEmailVerified, status, lastLoginAt } });
 });
 
 export default router;
