@@ -5,6 +5,7 @@ import { FolderKanban, Plus, ArrowUpRight } from 'lucide-react';
 import api from '../../services/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { SkeletonCard } from '../../components/common/Skeleton.jsx';
+import AnnouncementFeed from '../../components/dashboard/AnnouncementFeed.jsx';
 
 export default function DashboardHome() {
   const { user } = useAuth();
@@ -22,6 +23,8 @@ export default function DashboardHome() {
         </h1>
         <p className="mt-1 text-ink-400">Here's what's moving across your workspaces.</p>
       </motion.div>
+
+      <AnnouncementFeed />
 
       <div className="flex items-center justify-between">
         <h2 className="font-display text-lg font-semibold">Your projects</h2>
