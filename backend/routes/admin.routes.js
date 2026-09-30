@@ -62,7 +62,11 @@ router.get('/analytics/overview', async (req, res, next) => {
 // ---- Announcements ----
 router.post('/announcements', async (req, res, next) => {
   try {
-    const announcement = await Announcement.create({ ...req.body, postedBy: req.user._id });
+    const { title, message, severity } = req.body;
+    const created = await Announcement.create({ title, message, severity, postedBy: req.user._id });
+    const announcement = await created.populate('postedBy', 'name');
+    // Push live to every connected user's dashboard
+    req.app.get('io')?.emit('announcement:new', announcement);
     res.status(201).json({ announcement });
   } catch (err) {
     next(err);
@@ -80,8 +84,24 @@ router.get('/announcements', async (req, res, next) => {
 
 router.put('/announcements/:id', async (req, res, next) => {
   try {
-    const announcement = await Announcement.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    const { title, message, severity, active } = req.body;
+    const announcement = await Announcement.findByIdAndUpdate(
+      req.params.id,
+      { title, message, severity, active },
+      { new: true, omitUndefined: true }
+    );
+    req.app.get('io')?.emit('announcement:updated', announcement);
     res.json({ announcement });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/announcements/:id', async (req, res, next) => {
+  try {
+    await Announcement.findByIdAndDelete(req.params.id);
+    req.app.get('io')?.emit('announcement:deleted', { id: req.params.id });
+    res.json({ message: 'Announcement deleted' });
   } catch (err) {
     next(err);
   }
