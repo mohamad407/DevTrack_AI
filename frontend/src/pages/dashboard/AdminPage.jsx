@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Users, FolderKanban, Megaphone, BarChart3, Plus } from 'lucide-react';
+import { Users, FolderKanban, Megaphone, BarChart3, Plus, Trash2, Eye, EyeOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../../services/api.js';
 
@@ -49,6 +49,26 @@ export default function AdminPage() {
       toast.success('Announcement posted');
     } catch {
       toast.error('Could not post announcement');
+    }
+  };
+
+  const toggleAnnouncement = async (a) => {
+    try {
+      const { data } = await api.put(`/admin/announcements/${a._id}`, { active: !a.active });
+      setAnnouncements((prev) => prev.map((x) => (x._id === a._id ? data.announcement : x)));
+      toast.success(data.announcement.active ? 'Announcement visible to users' : 'Announcement hidden');
+    } catch {
+      toast.error('Could not update announcement');
+    }
+  };
+
+  const deleteAnnouncement = async (a) => {
+    try {
+      await api.delete(`/admin/announcements/${a._id}`);
+      setAnnouncements((prev) => prev.filter((x) => x._id !== a._id));
+      toast.success('Announcement deleted');
+    } catch {
+      toast.error('Could not delete announcement');
     }
   };
 
@@ -142,10 +162,16 @@ export default function AdminPage() {
             {announcements?.map((a) => (
               <div key={a._id} className="glass-card flex items-start gap-3 p-4">
                 <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${a.severity === 'critical' ? 'bg-danger' : a.severity === 'warning' ? 'bg-warning' : 'bg-cyan-glow'}`} />
-                <div>
+                <div className={`flex-1 ${a.active === false ? 'opacity-50' : ''}`}>
                   <p className="text-sm font-medium">{a.title}</p>
                   <p className="text-sm text-ink-400">{a.message}</p>
                 </div>
+                <button onClick={() => toggleAnnouncement(a)} className="btn-ghost px-2.5 py-1.5" title={a.active === false ? 'Show to users' : 'Hide from users'}>
+                  {a.active === false ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+                <button onClick={() => deleteAnnouncement(a)} className="btn-ghost px-2.5 py-1.5 text-danger" title="Delete">
+                  <Trash2 size={14} />
+                </button>
               </div>
             ))}
           </div>
