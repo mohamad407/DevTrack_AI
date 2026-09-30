@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Mail, Lock, User, Loader2 } from 'lucide-react';
+import { Mail, Lock, User, Loader2, Eye, EyeOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AuthLayout from '../components/auth/AuthLayout.jsx';
 import { signUpWithEmail } from '../services/firebase.js';
@@ -9,6 +9,7 @@ export default function SignupPage() {
   const navigate = useNavigate();
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -66,13 +67,21 @@ export default function SignupPage() {
         <div className="relative">
           <Lock size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-500" />
           <input
-            type="password"
+            type={showPassword ? 'text' : 'password'}
             required
             placeholder="Password (min. 6 characters)"
-            className="input-glass pl-10"
+            className="input-glass pl-10 pr-10"
             value={form.password}
             onChange={(e) => setForm({ ...form, password: e.target.value })}
           />
+          <button
+            type="button"
+            onClick={() => setShowPassword((v) => !v)}
+            tabIndex={-1}
+            className="absolute right-3.5 top-1/2 -translate-y-1/2 text-ink-500 hover:text-ink-200"
+          >
+            {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+          </button>
         </div>
 
         <button type="submit" disabled={loading} className="btn-primary w-full py-2.5">
