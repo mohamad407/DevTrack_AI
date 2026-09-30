@@ -23,6 +23,7 @@ import devopsRoutes from './routes/devops.routes.js';
 import analyticsRoutes from './routes/analytics.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import notificationRoutes from './routes/notification.routes.js';
+import announcementRoutes from './routes/announcement.routes.js';
 
 import { errorHandler, notFound } from './middleware/error.middleware.js';
 
@@ -116,6 +117,7 @@ app.use('/api/devops', devopsRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/announcements', announcementRoutes);
 
 // ----------------------------
 // Error Handling
