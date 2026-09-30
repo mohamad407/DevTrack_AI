@@ -8,13 +8,22 @@ const TABS = ['Overview', 'Users', 'Projects', 'Announcements'];
 export default function AdminPage() {
   const [tab, setTab] = useState('Overview');
   const [overview, setOverview] = useState(null);
+  const [overviewError, setOverviewError] = useState(null);
   const [users, setUsers] = useState(null);
   const [projects, setProjects] = useState(null);
   const [announcements, setAnnouncements] = useState(null);
   const [annForm, setAnnForm] = useState({ title: '', message: '', severity: 'info' });
 
+  const loadOverview = () => {
+    setOverview(null);
+    setOverviewError(null);
+    api.get('/admin/analytics/overview')
+      .then(({ data }) => setOverview(data))
+      .catch((err) => setOverviewError(err.response?.data?.message || err.message || 'Could not load platform stats'));
+  };
+
   useEffect(() => {
-    api.get('/admin/analytics/overview').then(({ data }) => setOverview(data)).catch(() => setOverview({}));
+    loadOverview();
     api.get('/admin/users').then(({ data }) => setUsers(data.users)).catch(() => setUsers([]));
     api.get('/admin/projects').then(({ data }) => setProjects(data.projects)).catch(() => setProjects([]));
     api.get('/admin/announcements').then(({ data }) => setAnnouncements(data.announcements)).catch(() => setAnnouncements([]));
@@ -65,11 +74,18 @@ export default function AdminPage() {
       </div>
 
       {tab === 'Overview' && (
-        <div className="grid gap-4 sm:grid-cols-3">
-          <StatCard icon={Users} label="Total users" value={overview?.totalUsers} />
-          <StatCard icon={FolderKanban} label="Total projects" value={overview?.totalProjects} />
-          <StatCard icon={BarChart3} label="Active this week" value={overview?.activeUsers} />
-        </div>
+        overviewError ? (
+          <div className="glass-card flex flex-col items-center gap-3 p-8 text-center">
+            <p className="text-sm text-danger">Could not load platform stats: {overviewError}</p>
+            <button onClick={loadOverview} className="btn-ghost px-4 py-1.5 text-xs">Retry</button>
+          </div>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-3">
+            <StatCard icon={Users} label="Total users" value={overview?.totalUsers} />
+            <StatCard icon={FolderKanban} label="Total projects" value={overview?.totalProjects} />
+            <StatCard icon={BarChart3} label="Active this week" value={overview?.activeUsers} />
+          </div>
+        )
       )}
 
       {tab === 'Users' && (
