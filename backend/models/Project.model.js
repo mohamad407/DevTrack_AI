@@ -25,6 +25,8 @@ const projectSchema = new mongoose.Schema(
       default: ['Backlog', 'To Do', 'In Progress', 'Code Review', 'Testing', 'Done'],
     },
     githubRepo: { type: String, default: '' }, // "owner/repo"
+    liveUrl: { type: String, default: '' }, // deployed app URL, used by the health monitor
+    deployHookUrl: { type: String, select: false, default: '' }, // Render/Vercel/Netlify hook (secret, never returned)
     status: { type: String, enum: ['active', 'archived'], default: 'active' },
   },
   { timestamps: true }
