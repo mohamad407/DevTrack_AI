@@ -57,6 +57,10 @@ app.use(compression());
 
 app.use(express.json({
   limit: '5mb',
+  // keep the raw bytes so GitHub webhook signatures can be verified
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  },
 }));
 
 app.use(express.urlencoded({
