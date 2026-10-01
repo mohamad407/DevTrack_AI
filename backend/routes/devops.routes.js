@@ -89,20 +89,44 @@ router.post('/:projectId/webhook', async (req, res) => {
 
     const durationSeconds = Math.max(0, Math.round((new Date(run.updated_at) - new Date(run.run_started_at)) / 1000)) || 0;
 
-    const deployment = await Deployment.findOneAndUpdate(
-      { project: project._id, runId: String(run.id) },
-      {
-        $set: {
-          environment: envFromBranch(run.head_branch),
-          status,
-          commitSha: run.head_sha || '',
-          branch: run.head_branch || 'main',
-          durationSeconds,
-          logs: `${run.name} - ${run.html_url}`,
+    const environment = envFromBranch(run.head_branch);
+    const runId = String(run.id);
+    const fields = {
+      environment,
+      status,
+      commitSha: run.head_sha || '',
+      branch: run.head_branch || 'main',
+      durationSeconds,
+      logs: `${run.name} - ${run.html_url}`,
+    };
+
+    // 1) same run delivered again -> update it
+    let deployment = await Deployment.findOneAndUpdate({ project: project._id, runId }, { $set: fields }, { new: true });
+
+    // 2) a queued/running row from the Deploy button on the same branch+env (last 60 min) -> finish that one
+    if (!deployment) {
+      deployment = await Deployment.findOneAndUpdate(
+        {
+          project: project._id,
+          environment,
+          branch: fields.branch,
+          status: { $in: ['queued', 'running'] },
+          runId: { $exists: false },
+          createdAt: { $gte: new Date(Date.now() - 60 * 60 * 1000) },
         },
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
+        { $set: { ...fields, runId } },
+        { new: true, sort: { createdAt: -1 } }
+      );
+    }
+
+    // 3) otherwise record a new one
+    if (!deployment) {
+      deployment = await Deployment.findOneAndUpdate(
+        { project: project._id, runId },
+        { $set: fields },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+    }
 
     req.app.get('io')?.to(`project:${project._id}`).emit('deployment:new', deployment);
     if (status === 'failed') await notifyFailure(project, deployment);
@@ -393,12 +417,33 @@ router.post('/:projectId/deployments', requireProjectRole(['Admin', 'Scrum Maste
 
 router.put('/:projectId/deployments/:id', requireProjectRole(['Admin', 'Scrum Master']), async (req, res, next) => {
   try {
-    const deployment = await Deployment.findOneAndUpdate(
-      { _id: req.params.id, project: req.project._id },
-      pickDeployment(req.body),
-      { new: true, runValidators: true }
-    );
-    res.json({ deployment });
+    const existing = await Deployment.findOne({ _id: req.params.id, project: req.project._id });
+    if (!existing) return res.status(404).json({ message: 'Deployment not found' });
+
+    const patch = pickDeployment(req.body);
+    const wasPending = ['queued', 'running'].includes(existing.status);
+    const finishing = wasPending && ['success', 'failed'].includes(patch.status);
+    if (finishing && patch.durationSeconds === undefined) {
+      patch.durationSeconds = Math.max(0, Math.round((Date.now() - existing.createdAt) / 1000));
+    }
+
+    Object.assign(existing, patch);
+    await existing.save();
+
+    req.app.get('io')?.to(`project:${req.project._id}`).emit('deployment:new', existing);
+    if (finishing && existing.status === 'failed') await notifyFailure(req.project, existing);
+    res.json({ deployment: existing });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Delete a record (project Admin only) - e.g. to clean up test entries
+router.delete('/:projectId/deployments/:id', requireProjectRole(['Admin']), async (req, res, next) => {
+  try {
+    await Deployment.findOneAndDelete({ _id: req.params.id, project: req.project._id });
+    req.app.get('io')?.to(`project:${req.project._id}`).emit('deployment:new', { removed: req.params.id });
+    res.json({ message: 'Deployment deleted' });
   } catch (err) {
     next(err);
   }
