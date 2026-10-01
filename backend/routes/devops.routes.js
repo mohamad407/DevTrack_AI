@@ -280,7 +280,8 @@ router.get('/:projectId/summary', requireProjectRole([]), async (req, res, next)
     const finished = deps.filter((d) => ['success', 'failed'].includes(d.status));
     const ok = finished.filter((d) => d.status === 'success').length;
 
-    const durations = finished.map((d) => d.durationSeconds).filter((n) => n > 0);
+    // only real GitHub Actions runs (they carry a runId) count towards build time
+    const durations = finished.filter((d) => d.runId).map((d) => d.durationSeconds).filter((n) => n > 0);
     const avgDurationSeconds = durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : null;
 
     // Mean time to recover: first failure in an environment -> next success there
