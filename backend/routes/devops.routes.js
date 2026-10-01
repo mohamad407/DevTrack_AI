@@ -423,9 +423,7 @@ router.put('/:projectId/deployments/:id', requireProjectRole(['Admin', 'Scrum Ma
     const patch = pickDeployment(req.body);
     const wasPending = ['queued', 'running'].includes(existing.status);
     const finishing = wasPending && ['success', 'failed'].includes(patch.status);
-    if (finishing && patch.durationSeconds === undefined) {
-      patch.durationSeconds = Math.max(0, Math.round((Date.now() - existing.createdAt) / 1000));
-    }
+    // Note: no duration is guessed here - build time only comes from real GitHub Actions runs
 
     Object.assign(existing, patch);
     await existing.save();
