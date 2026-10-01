@@ -12,8 +12,14 @@ const deploymentSchema = new mongoose.Schema(
     logs: { type: String, default: '' },
     durationSeconds: { type: Number, default: 0 },
     dockerImage: { type: String, default: '' },
+    runId: { type: String }, // GitHub Actions run id (set by the webhook, used to avoid duplicates)
   },
   { timestamps: true }
+);
+deploymentSchema.index({ project: 1, createdAt: -1 });
+deploymentSchema.index(
+  { project: 1, runId: 1 },
+  { unique: true, partialFilterExpression: { runId: { $type: 'string' } } }
 );
 
 // ---- Announcements (Admin panel) ----
