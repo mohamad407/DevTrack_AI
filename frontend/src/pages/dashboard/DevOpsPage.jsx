@@ -225,7 +225,7 @@ export default function DevOpsPage() {
       d.environment, d.status, d.branch, d.commitSha, d.durationSeconds || '',
       d.triggeredBy?.name || 'GitHub Actions', d.logs, new Date(d.createdAt).toISOString(),
     ]));
-    const blob = new Blob([rows.map((r) => r.map(esc).join(',')).join('\n')], { type: 'text/csv' });
+    const blob = new Blob(['\uFEFF' + rows.map((r) => r.map(esc).join(',')).join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `deployments-${env.toLowerCase()}.csv`;
@@ -266,7 +266,7 @@ export default function DevOpsPage() {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Metric icon={Rocket} label="Deploys / week" value={summary?.perWeek ?? '—'} hint={summary?.total !== undefined ? `${summary.total} in last 30 days` : ''} tone="text-cyan-glow" />
         <Metric icon={ShieldCheck} label="Success rate" value={summary?.successRate != null ? `${summary.successRate}%` : '—'} hint={summary?.changeFailureRate != null ? `${summary.changeFailureRate}% change failure rate` : 'No finished deployments yet'} tone="text-success" />
-        <Metric icon={Timer} label="Avg build time" value={fmtDuration(summary?.avgDurationSeconds)} hint="Webhook runs & resolved deploys" />
+        <Metric icon={Timer} label="Avg build time" value={fmtDuration(summary?.avgDurationSeconds)} hint="From GitHub Actions runs" />
         <Metric icon={Gauge} label="Avg time to recover" value={fmtMinutes(summary?.mttrMinutes)} hint="Failure → next success" tone="text-warning" />
       </div>
 
