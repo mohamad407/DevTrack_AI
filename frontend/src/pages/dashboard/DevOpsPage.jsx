@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   GitBranch, CheckCircle2, XCircle, Loader2, Clock, Rocket, Link2, Activity, Globe,
-  RefreshCw, Play, Plus, ExternalLink, Copy, Gauge, GitPullRequest, Timer, ShieldCheck,
+  RefreshCw, Play, Plus, ExternalLink, Copy, Gauge, GitPullRequest, Timer, ShieldCheck, Trash2, Download,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../../services/api.js';
@@ -77,7 +77,7 @@ export default function DevOpsPage() {
   const [liveInput, setLiveInput] = useState('');
   const [hookInput, setHookInput] = useState('');
   const [showRecord, setShowRecord] = useState(false);
-  const [rec, setRec] = useState({ status: 'success', branch: 'main', commitSha: '' });
+  const [rec, setRec] = useState({ status: 'success', branch: 'main', commitSha: '', notes: '' });
   const [deploying, setDeploying] = useState(false);
 
   const isAdmin = role === 'Admin';
@@ -186,14 +186,51 @@ export default function DevOpsPage() {
   const recordDeployment = async (e) => {
     e.preventDefault();
     try {
-      await api.post(`/devops/${projectId}/deployments`, { ...rec, environment: env });
+      const { notes, ...rest } = rec;
+      await api.post(`/devops/${projectId}/deployments`, { ...rest, logs: notes, environment: env });
       toast.success('Deployment recorded');
       setShowRecord(false);
-      setRec({ status: 'success', branch: 'main', commitSha: '' });
+      setRec({ status: 'success', branch: 'main', commitSha: '', notes: '' });
       loadDeployments();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Could not record deployment');
     }
+  };
+
+  const resolveDeployment = async (id, status) => {
+    try {
+      await api.put(`/devops/${projectId}/deployments/${id}`, { status });
+      toast.success(status === 'success' ? 'Marked as success' : 'Marked as failed');
+      loadDeployments();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Could not update deployment');
+    }
+  };
+
+  const deleteDeployment = async (id) => {
+    if (!window.confirm('Delete this deployment record?')) return;
+    try {
+      await api.delete(`/devops/${projectId}/deployments/${id}`);
+      toast.success('Deployment deleted');
+      loadDeployments();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Could not delete deployment');
+    }
+  };
+
+  const exportCsv = () => {
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const rows = [['Environment', 'Status', 'Branch', 'Commit', 'Duration (s)', 'By', 'Notes', 'Date']];
+    (deployments || []).forEach((d) => rows.push([
+      d.environment, d.status, d.branch, d.commitSha, d.durationSeconds || '',
+      d.triggeredBy?.name || 'GitHub Actions', d.logs, new Date(d.createdAt).toISOString(),
+    ]));
+    const blob = new Blob([rows.map((r) => r.map(esc).join(',')).join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `deployments-${env.toLowerCase()}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   };
 
   const copy = (text) => {
@@ -229,7 +266,7 @@ export default function DevOpsPage() {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Metric icon={Rocket} label="Deploys / week" value={summary?.perWeek ?? '—'} hint={summary?.total !== undefined ? `${summary.total} in last 30 days` : ''} tone="text-cyan-glow" />
         <Metric icon={ShieldCheck} label="Success rate" value={summary?.successRate != null ? `${summary.successRate}%` : '—'} hint={summary?.changeFailureRate != null ? `${summary.changeFailureRate}% change failure rate` : 'No finished deployments yet'} tone="text-success" />
-        <Metric icon={Timer} label="Avg build time" value={fmtDuration(summary?.avgDurationSeconds)} hint="From webhook-recorded runs" />
+        <Metric icon={Timer} label="Avg build time" value={fmtDuration(summary?.avgDurationSeconds)} hint="Webhook runs & resolved deploys" />
         <Metric icon={Gauge} label="Avg time to recover" value={fmtMinutes(summary?.mttrMinutes)} hint="Failure → next success" tone="text-warning" />
       </div>
 
@@ -455,6 +492,9 @@ export default function DevOpsPage() {
                 </button>
               ))}
             </div>
+            <button onClick={exportCsv} disabled={!deployments?.length} className="btn-ghost px-3 py-1.5 text-xs" title="Export CSV">
+              <Download size={13} /> Export
+            </button>
             {canManage && (
               <button onClick={() => setShowRecord((v) => !v)} className="btn-ghost px-3 py-1.5 text-xs">
                 <Plus size={13} /> Record
@@ -470,6 +510,7 @@ export default function DevOpsPage() {
             </select>
             <input className="input-glass py-2 text-sm" placeholder="branch" value={rec.branch} onChange={(e) => setRec({ ...rec, branch: e.target.value })} />
             <input className="input-glass py-2 font-mono text-sm" placeholder="commit sha" value={rec.commitSha} onChange={(e) => setRec({ ...rec, commitSha: e.target.value })} />
+            <input className="input-glass py-2 text-sm sm:col-span-3" placeholder="Release notes (optional) - what changed in this deploy?" value={rec.notes} onChange={(e) => setRec({ ...rec, notes: e.target.value })} />
             <button type="submit" className="btn-primary text-sm">Save to {env}</button>
           </form>
         )}
@@ -481,15 +522,27 @@ export default function DevOpsPage() {
         ) : (
           <div className="space-y-2">
             {deployments.map((d) => (
-              <div key={d._id} className="flex items-center justify-between rounded-xl border border-white/[0.06] p-3 text-sm">
+              <div key={d._id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[0.06] p-3 text-sm">
                 <div className="flex items-center gap-3">
                   {statusIcon[d.status] || <Clock size={16} />}
                   <div>
                     <p className="font-medium">{d.branch} <span className="font-mono text-xs text-ink-500">{d.commitSha?.slice(0, 7)}</span></p>
-                    <p className="text-xs text-ink-500">by {d.triggeredBy?.name || 'GitHub Actions'}{d.durationSeconds > 0 ? ` · ${fmtDuration(d.durationSeconds)}` : ''}</p>
+                    <p className="text-xs text-ink-500"><span className="capitalize">{d.status}</span> · by {d.triggeredBy?.name || 'GitHub Actions'}{d.durationSeconds > 0 ? ` · ${fmtDuration(d.durationSeconds)}` : ''}</p>
+                    {d.logs && <p className="mt-0.5 max-w-md truncate text-xs text-ink-400" title={d.logs}>{d.logs}</p>}
                   </div>
                 </div>
-                <span className="text-xs text-ink-500">{new Date(d.createdAt).toLocaleString()}</span>
+                <div className="flex items-center gap-2">
+                  {canManage && ['queued', 'running'].includes(d.status) && (
+                    <>
+                      <button onClick={() => resolveDeployment(d._id, 'success')} className="btn-ghost px-2.5 py-1 text-xs text-success">Mark success</button>
+                      <button onClick={() => resolveDeployment(d._id, 'failed')} className="btn-ghost px-2.5 py-1 text-xs text-danger">Mark failed</button>
+                    </>
+                  )}
+                  <span className="text-xs text-ink-500">{new Date(d.createdAt).toLocaleString()}</span>
+                  {isAdmin && (
+                    <button onClick={() => deleteDeployment(d._id)} className="btn-ghost px-2 py-1 text-danger" title="Delete record"><Trash2 size={13} /></button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
