@@ -267,7 +267,7 @@ export default function DevOpsPage() {
         <Metric icon={Rocket} label="Deploys / week" value={summary?.perWeek ?? '—'} hint={summary?.total !== undefined ? `${summary.total} in last 30 days` : ''} tone="text-cyan-glow" />
         <Metric icon={ShieldCheck} label="Success rate" value={summary?.successRate != null ? `${summary.successRate}%` : '—'} hint={summary?.changeFailureRate != null ? `${summary.changeFailureRate}% change failure rate` : 'No finished deployments yet'} tone="text-success" />
         <Metric icon={Timer} label="Avg build time" value={fmtDuration(summary?.avgDurationSeconds)} hint="From GitHub Actions runs" />
-        <Metric icon={Gauge} label="Avg time to recover" value={fmtMinutes(summary?.mttrMinutes)} hint="Failure → next success" tone="text-warning" />
+        <Metric icon={Gauge} label="Avg time to recover" value={fmtMinutes(summary?.mttrMinutes)} hint={summary?.mttrMinutes != null ? 'Failure → next success' : summary?.changeFailureRate > 0 ? 'Waiting for a success after the last failure' : 'No failures yet'} tone="text-warning" />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
