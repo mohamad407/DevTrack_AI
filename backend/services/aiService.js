@@ -419,7 +419,7 @@ Include these sections in Markdown:
 // The frontend executes the action with the user's own login, so permissions
 // are still enforced by the normal API routes.
 // ---------------------------------------------------------------------------
-const SALINA_ACTIONS = ["navigate", "create_story", "my_work", "devops_status", "notifications", "announce", "deploy", "move_story", "assign_story", "sprint_status", "overdue", "briefing", "chat", "unknown"];
+const SALINA_ACTIONS = ["navigate", "create_story", "my_work", "devops_status", "notifications", "announce", "deploy", "create_project", "move_story", "assign_story", "sprint_status", "overdue", "briefing", "chat", "unknown"];
 const SALINA_STATUSES = ["Backlog", "To Do", "In Progress", "Code Review", "Testing", "Done"];
 const SALINA_TARGETS = ["dashboard", "projects", "backlog", "sprints", "board", "analytics", "devops", "team", "ai", "profile", "admin"];
 const SALINA_PRIORITIES = ["Low", "Medium", "High", "Critical"];
@@ -429,6 +429,8 @@ const SALINA_ENVS = ["Development", "Testing", "Production"];
 export async function parseSalinaCommand(text, context = {}) {
   const extraSystem = `You are Salina, the friendly voice assistant inside DevTrack AI. You sound like a warm, casual, helpful woman teammate.
 Your replies are read aloud, so: plain spoken English, no markdown, no emojis, no lists, at most 2 short sentences. Never say your own name.
+
+HONESTY RULE: you can only do the actions listed below. Never say you did, are doing, or will do anything unless that exact action is chosen. If the user asks for something not listed (for example editing or deleting a project, inviting members, changing settings), use "chat" and say plainly that you can't do that yet, then name one thing you can do.
 
 Turn the user's request into exactly ONE action. Return ONLY JSON like:
 {"action":"...","params":{...},"speech":"..."}
@@ -441,6 +443,7 @@ Actions and params:
 - notifications: {"markRead":true|false}
 - announce: {"title":"short title","message":"the announcement text","severity":"info|warning|critical"}  (posting an announcement to everyone)
 - deploy: {"environment":"Development|Testing|Production","project":"project name or empty"}
+- create_project: {"name":"project name or empty","description":"short description or empty"}
 - move_story: {"story":"words from the story title, or 'it' if they mean the last story","status":"Backlog|To Do|In Progress|Code Review|Testing|Done","project":"project name or empty"}
 - assign_story: {"story":"words from the story title, or 'it'","person":"first name of the teammate, or 'me'","project":"project name or empty"}
 - sprint_status: {"project":"project name or empty"}  (how the current sprint is going)
@@ -469,6 +472,7 @@ User's first name: ${context.firstName || "there"}. Current page: ${context.path
   if (params.target && !SALINA_TARGETS.includes(params.target)) action = "unknown";
   if (params.priority && !SALINA_PRIORITIES.includes(params.priority)) params.priority = "Medium";
   if (params.status && !SALINA_STATUSES.includes(params.status)) params.status = "";
+  if (typeof params.name === "string") params.name = params.name.trim().slice(0, 80);
   if (typeof params.story === "string") params.story = params.story.trim().slice(0, 140);
   if (typeof params.person === "string") params.person = params.person.trim().slice(0, 60);
   if (params.severity && !SALINA_SEVERITIES.includes(params.severity)) params.severity = "info";
