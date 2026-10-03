@@ -86,3 +86,20 @@ export async function releaseNotes(req, res) {
     handleAiError(res, err)
   }
 }
+
+// Salina voice agent: sentence in, structured action out.
+export async function salina(req, res) {
+  try {
+    const text = String(req.body.text || '').trim().slice(0, 300)
+    if (!text) return res.status(400).json({ error: 'text is required' })
+    const context = {
+      firstName: String(req.user?.name || '').replace(/[0-9_]+/g, ' ').trim().split(/\s+/)[0] || 'there',
+      path: String(req.body.path || '').slice(0, 200),
+      today: new Date().toDateString(),
+    }
+    const result = await aiService.parseSalinaCommand(text, context)
+    res.json(result)
+  } catch (err) {
+    handleAiError(res, err)
+  }
+}
