@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar.jsx';
 import Topbar from './Topbar.jsx';
+import SalinaAgent from '../salina/SalinaAgent.jsx';
 
 export default function DashboardLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -15,6 +16,7 @@ export default function DashboardLayout() {
           <Outlet />
         </main>
       </div>
+      <SalinaAgent />
     </div>
   );
 }
