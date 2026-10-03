@@ -84,6 +84,10 @@ function parseLocal(text) {
     return { action: 'navigate', params: { target: TARGETS[nav[1]], project: nav[2] || '' }, speech: `Sure, opening ${label}.` };
   }
 
+  const orig = text.replace(/[.,!?]/g, ' ').replace(/\s+/g, ' ').trim(); // keeps the capitals you said
+  const proj = orig.match(/^(?:create|make|start|add|set up)\s+(?:a\s+|an\s+|one\s+)?(?:new\s+)?project(?:\s+(?:called|named|name)\s+(.+))?$/i);
+  if (proj) return { action: 'create_project', params: { name: proj[1] || '', description: '' }, speech: '' };
+
   // "move login bug to in progress" / "mark it as done"
   const move = t.match(/^(?:move|put|set|change|update)\s+(.+?)\s+(?:to|as|into)\s+(.+)$/);
   if (move && toStatus(move[2])) return { action: 'move_story', params: { story: move[1], status: toStatus(move[2]), project: '' }, speech: '' };
@@ -159,6 +163,8 @@ export default function SalinaAgent() {
   const ignoreUntil = useRef(0);
   const pendingRef = useRef(null);
   const queueRef = useRef(null);
+  const slotRef = useRef(null); // she asked a question and is waiting for the answer
+  const slotTimer = useRef(null);
   const lastSpokenRef = useRef('');
   const lastStoryRef = useRef(null); // { _id, title, project } for "move it to done"
   const projectsRef = useRef(null);
@@ -311,6 +317,14 @@ export default function SalinaAgent() {
     pendingTimer.current = setTimeout(() => { pendingRef.current = null; finish(); }, 15000);
   };
 
+  // ask a question and treat your next sentence as the answer (e.g. "what should it be called?")
+  const askSlot = async (prompt, fill) => {
+    await speak(prompt);
+    slotRef.current = { fill };
+    clearTimeout(slotTimer.current);
+    slotTimer.current = setTimeout(() => { slotRef.current = null; }, 20000);
+  };
+
   /* ------------------------------ actions ------------------------------ */
   const execute = async (plan) => {
     const params = plan.params || {};
@@ -340,7 +354,10 @@ export default function SalinaAgent() {
       }
 
       case 'create_story': {
-        if (!params.title) { await speak('What should the story be called?'); return; }
+        if (!params.title) {
+          await askSlot('What should the story be called?', (answer) => execute({ ...plan, params: { ...params, title: answer.slice(0, 140) } }));
+          return;
+        }
         const p = await resolveProject(params.project);
         if (!p) { await askWhichProject(); return; }
         try {
@@ -355,6 +372,23 @@ export default function SalinaAgent() {
           await speak(plan.speech || `Done. I added "${params.title}" to the ${p.name} backlog.`);
         } catch (err) {
           await speak(failSpeech(err, "I couldn't add that story."));
+        }
+        return;
+      }
+
+      case 'create_project': {
+        const name = (params.name || '').trim();
+        if (!name) {
+          await askSlot('Sure. What should the project be called?', (answer) => execute({ ...plan, params: { ...params, name: answer.slice(0, 80) } }));
+          return;
+        }
+        try {
+          await api.post('/projects', { name, description: params.description || '' });
+          projectsRef.current = null; // reload the project list next time
+          toast.success(`Project "${name}" created`);
+          await speak(`Done. I created the project ${name}. You'll find it in your Projects list.`);
+        } catch (err) {
+          await speak(failSpeech(err, "I couldn't create that project."));
         }
         return;
       }
@@ -508,7 +542,10 @@ export default function SalinaAgent() {
 
       case 'announce': {
         if (user?.systemRole !== 'admin') { await speak('Only admins can post announcements.'); return; }
-        if (!params.title && !params.message) { await speak('What should the announcement say?'); return; }
+        if (!params.title && !params.message) {
+          await askSlot('What should the announcement say?', (answer) => execute({ ...plan, params: { ...params, title: answer.slice(0, 60), message: answer } }));
+          return;
+        }
         const title = params.title || params.message.slice(0, 60);
         const message = params.message || params.title;
         await askConfirm(`${plan.speech || `I'll announce "${title}" to everyone.`} Should I go ahead?`, async () => {
@@ -561,8 +598,15 @@ export default function SalinaAgent() {
         try {
           const { data } = await api.post('/ai/salina', { text, path: pathRef.current, lastStory: lastStoryRef.current?.title || '' });
           plan = data;
-        } catch {
-          await speak("Sorry, my AI side isn't responding right now. Quick commands like opening pages still work.");
+        } catch (e) {
+          const msg = String(e?.response?.data?.error || '');
+          await speak(
+            !e?.response
+              ? "I can't reach the server right now. It may be waking up, so try again in a few seconds."
+              : msg.includes('GROQ_API_KEY')
+                ? "My AI key isn't set on the server yet, so I can only do quick commands like opening pages."
+                : 'My AI side had a hiccup. Try again in a moment. Quick commands like opening pages still work.'
+          );
           return;
         }
       }
@@ -610,6 +654,29 @@ export default function SalinaAgent() {
       return;
     }
 
+    const stripWake = (s) => s.replace(WAKE_RE, '').replace(/^[\s,.:;!?-]+/, '').trim();
+
+    // she asked a question ("what should it be called?") and this is the answer
+    if (slotRef.current && !pendingRef.current) {
+      const { fill } = slotRef.current;
+      slotRef.current = null;
+      clearTimeout(slotTimer.current);
+      const answer = stripWake(text) || text;
+      addLine('you', text);
+      busyRef.current = true;
+      try {
+        if (/^(cancel|never mind|nevermind|forget it|stop)$/i.test(norm(answer))) await speak('Okay, cancelled.');
+        else await fill(answer);
+      } catch (err) {
+        await speak(failSpeech(err, 'Something went wrong on my side.'));
+      } finally {
+        busyRef.current = false;
+        openWindow();
+        drainQueue();
+      }
+      return;
+    }
+
     // waiting for a yes / no
     if (pendingRef.current) {
       const { run } = pendingRef.current;
@@ -629,8 +696,6 @@ export default function SalinaAgent() {
       }
       return;
     }
-
-    const stripWake = (s) => s.replace(WAKE_RE, '').replace(/^[\s,.:;!?-]+/, '').trim();
 
     // conversation is open (she just greeted or answered) or the user typed it
     if (awakeRef.current || forced) {
@@ -657,8 +722,10 @@ export default function SalinaAgent() {
     clearTimeout(awakeTimer.current);
     clearTimeout(pendingTimer.current);
     clearTimeout(resumeTimer.current);
+    clearTimeout(slotTimer.current);
     awakeRef.current = false;
     pendingRef.current = null;
+    slotRef.current = null;
     queueRef.current = null;
     speakingRef.current = false;
     setHearing('');
