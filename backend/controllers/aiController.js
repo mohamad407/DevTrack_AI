@@ -95,6 +95,7 @@ export async function salina(req, res) {
     const context = {
       firstName: String(req.user?.name || '').replace(/[0-9_]+/g, ' ').trim().split(/\s+/)[0] || 'there',
       path: String(req.body.path || '').slice(0, 200),
+      lastStory: String(req.body.lastStory || '').slice(0, 140),
       today: new Date().toDateString(),
     }
     const result = await aiService.parseSalinaCommand(text, context)
