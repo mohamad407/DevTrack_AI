@@ -419,7 +419,8 @@ Include these sections in Markdown:
 // The frontend executes the action with the user's own login, so permissions
 // are still enforced by the normal API routes.
 // ---------------------------------------------------------------------------
-const SALINA_ACTIONS = ["navigate", "create_story", "my_work", "devops_status", "notifications", "announce", "deploy", "chat", "unknown"];
+const SALINA_ACTIONS = ["navigate", "create_story", "my_work", "devops_status", "notifications", "announce", "deploy", "move_story", "assign_story", "sprint_status", "overdue", "briefing", "chat", "unknown"];
+const SALINA_STATUSES = ["Backlog", "To Do", "In Progress", "Code Review", "Testing", "Done"];
 const SALINA_TARGETS = ["dashboard", "projects", "backlog", "sprints", "board", "analytics", "devops", "team", "ai", "profile", "admin"];
 const SALINA_PRIORITIES = ["Low", "Medium", "High", "Critical"];
 const SALINA_SEVERITIES = ["info", "warning", "critical"];
@@ -440,10 +441,16 @@ Actions and params:
 - notifications: {"markRead":true|false}
 - announce: {"title":"short title","message":"the announcement text","severity":"info|warning|critical"}  (posting an announcement to everyone)
 - deploy: {"environment":"Development|Testing|Production","project":"project name or empty"}
+- move_story: {"story":"words from the story title, or 'it' if they mean the last story","status":"Backlog|To Do|In Progress|Code Review|Testing|Done","project":"project name or empty"}
+- assign_story: {"story":"words from the story title, or 'it'","person":"first name of the teammate, or 'me'","project":"project name or empty"}
+- sprint_status: {"project":"project name or empty"}  (how the current sprint is going)
+- overdue: {}  (stories past their due date)
+- briefing: {}  (a short catch-up on their day: open work, overdue, notifications, site status)
 - chat: {}  (any other question or small talk - put the full short answer in "speech")
 - unknown: {}  (unclear request - ask one short clarifying question in "speech")
 
 "speech" is what you say first, e.g. "Sure, adding that story now." For announce and deploy, describe exactly what you are about to do in one sentence.
+Last story discussed: ${context.lastStory || "none"}. If the user says it, that, or this one, use "it" as the story.
 User's first name: ${context.firstName || "there"}. Current page: ${context.path || "unknown"}. Today: ${context.today || ""}.`;
 
   const raw = await complete(`User said: "${String(text).slice(0, 300)}"`, {
@@ -461,6 +468,9 @@ User's first name: ${context.firstName || "there"}. Current page: ${context.path
   // keep params inside known values
   if (params.target && !SALINA_TARGETS.includes(params.target)) action = "unknown";
   if (params.priority && !SALINA_PRIORITIES.includes(params.priority)) params.priority = "Medium";
+  if (params.status && !SALINA_STATUSES.includes(params.status)) params.status = "";
+  if (typeof params.story === "string") params.story = params.story.trim().slice(0, 140);
+  if (typeof params.person === "string") params.person = params.person.trim().slice(0, 60);
   if (params.severity && !SALINA_SEVERITIES.includes(params.severity)) params.severity = "info";
   if (params.environment && !SALINA_ENVS.includes(params.environment)) params.environment = "Production";
   if (typeof params.title === "string") params.title = params.title.trim().slice(0, 140);
