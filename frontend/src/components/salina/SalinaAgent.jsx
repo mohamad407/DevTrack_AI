@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Mic, MicOff, Loader2, Send, X, Volume2 } from 'lucide-react';
+import { Mic, MicOff, Loader2, Send, X, Volume2, VolumeX } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../../services/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 
 /**
  * Salina - voice agent. Say "Salina" (Chrome / Edge) and she answers in a female voice,
- * then runs your request through the same API your clicks use, so she can never do more
- * than your own role allows. Typing a command in her panel works in every browser.
+ * then keeps the conversation open so you can give follow-up commands without waking her again.
+ * Everything runs through the same API your clicks use, so she can never do more than your role allows.
+ * Typing a command in her panel works in every browser.
  */
 
 const SR = typeof window !== 'undefined' ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
@@ -18,13 +19,15 @@ const WAKE_RE = /\b(salina|salena|saleena|selena|celina|sireena|sirina|salinah|s
 const YES_RE = /^(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|confirm|please do|correct|right)\b/;
 const NO_RE = /^(no|nope|nah|cancel|stop|don't|dont|never mind|nevermind)\b/;
 
+const WINDOW_MS = 12000; // how long she keeps listening for the next command
+
 // first match wins, so natural neural voices come first
 const FEMALE_VOICE_HINTS = ['aria', 'jenny', 'zira', 'samantha', 'google uk english female', 'google us english', 'hazel', 'susan', 'karen', 'moira', 'tessa', 'victoria', 'female'];
 
 const PHASE_LABEL = {
   off: 'Voice is off',
   idle: 'Say "Salina" to wake me',
-  awake: 'Listening...',
+  awake: 'Listening... go ahead',
   thinking: 'Thinking...',
   speaking: 'Speaking...',
 };
@@ -35,7 +38,27 @@ const TARGETS = {
   devops: 'devops', 'dev ops': 'devops', team: 'team', assistant: 'ai', 'ai assistant': 'ai', profile: 'profile', admin: 'admin',
 };
 
+const STATUSES = ['Backlog', 'To Do', 'In Progress', 'Code Review', 'Testing', 'Done'];
+const STATUS_MAP = [
+  [/backlog/, 'Backlog'],
+  [/to ?do|todo|ready/, 'To Do'],
+  [/progress|started|working|doing/, 'In Progress'],
+  [/review/, 'Code Review'],
+  [/test|qa/, 'Testing'],
+  [/done|finish|complete|closed|shipped/, 'Done'],
+];
+const toStatus = (s = '') => {
+  if (STATUSES.includes(s)) return s;
+  const t = String(s).toLowerCase();
+  for (const [re, val] of STATUS_MAP) if (re.test(t)) return val;
+  return null;
+};
+
 const PRIORITY_RANK = { Critical: 4, High: 3, Medium: 2, Low: 1 };
+const IT_RE = /^(it|that|this|that one|this one|the story|that story|this story|same one)$/i;
+const STOP_WORDS = ['the', 'a', 'an', 'story', 'task', 'ticket', 'item', 'one', 'please'];
+
+const norm = (s = '') => String(s).toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
 const pickVoice = () => {
   const voices = window.speechSynthesis?.getVoices?.() || [];
@@ -50,14 +73,29 @@ const pickVoice = () => {
 // quick commands handled locally: instant, free, and they work even if the AI service is down
 function parseLocal(text) {
   const t = text.toLowerCase().replace(/[.,!?]/g, ' ').replace(/\s+/g, ' ').trim();
-  if (/^(stop|cancel|quiet|be quiet|never mind|nevermind|that's all|thats all)$/.test(t) || /^(thank you|thanks)/.test(t)) {
+
+  if (/^(stop|cancel|quiet|be quiet|never mind|nevermind|that's all|thats all|that is all|i'm done|im done|goodbye|bye)$/.test(t) || /^(thank you|thanks)/.test(t)) {
     return { action: 'dismiss', params: {}, speech: 'Anytime!' };
   }
+
   const nav = t.match(/^(?:open|go to|show me|show|take me to|navigate to|launch)\s+(?:the\s+|my\s+)?(dashboard|home|overview|projects?|backlog|sprints?|board|kanban|analytics|devops|dev ops|team|ai assistant|assistant|profile|admin)(?:\s+(?:of|for|in)\s+(.+))?$/);
   if (nav) {
     const label = nav[1] === 'dev ops' ? 'DevOps' : nav[1];
     return { action: 'navigate', params: { target: TARGETS[nav[1]], project: nav[2] || '' }, speech: `Sure, opening ${label}.` };
   }
+
+  // "move login bug to in progress" / "mark it as done"
+  const move = t.match(/^(?:move|put|set|change|update)\s+(.+?)\s+(?:to|as|into)\s+(.+)$/);
+  if (move && toStatus(move[2])) return { action: 'move_story', params: { story: move[1], status: toStatus(move[2]), project: '' }, speech: '' };
+  const mark = t.match(/^mark\s+(.+?)\s+(?:as\s+)?(done|complete|completed|finished)$/);
+  if (mark) return { action: 'move_story', params: { story: mark[1], status: 'Done', project: '' }, speech: '' };
+
+  const assign = t.match(/^assign\s+(.+?)\s+to\s+(.+)$/);
+  if (assign) return { action: 'assign_story', params: { story: assign[1], person: assign[2], project: '' }, speech: '' };
+
+  if (/\b(briefing|catch me up|what('s| is) (up|new|happening)( today)?|my day|good morning)\b/.test(t)) return { action: 'briefing', params: {}, speech: '' };
+  if (/\b(overdue|past due|behind schedule)\b/.test(t)) return { action: 'overdue', params: {}, speech: '' };
+  if (/\bsprint\b.*\b(status|progress|going|doing)\b|\bhow('s| is| are)\b.*\bsprint\b/.test(t)) return { action: 'sprint_status', params: { project: '' }, speech: '' };
   if (/\b(my (tasks|work|stories|assignments)|assigned to me|on my plate)\b/.test(t)) return { action: 'my_work', params: {}, speech: '' };
   if (/\bnotifications?\b/.test(t)) return { action: 'notifications', params: { markRead: /\b(mark|clear)\b/.test(t) }, speech: '' };
   if (
@@ -75,6 +113,27 @@ const failSpeech = (err, fallback) =>
     ? "Sorry, you don't have permission to do that."
     : err?.response?.data?.message || err?.response?.data?.error || fallback;
 
+// a soft "go ahead" chime so you know when she is listening again
+let audioCtx = null;
+const chime = () => {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    audioCtx = audioCtx || new AC();
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'sine';
+    o.frequency.value = 880;
+    g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.08, audioCtx.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.18);
+    o.connect(g);
+    g.connect(audioCtx.destination);
+    o.start();
+    o.stop(audioCtx.currentTime + 0.2);
+  } catch { /* ignore */ }
+};
+
 export default function SalinaAgent() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -87,18 +146,24 @@ export default function SalinaAgent() {
   const [open, setOpen] = useState(false);
   const [log, setLog] = useState([]);
   const [typed, setTyped] = useState('');
+  const [hearing, setHearing] = useState('');
 
   const enabledRef = useRef(false);
   const recogRef = useRef(null);
   const awakeRef = useRef(false);
   const awakeTimer = useRef(null);
   const pendingTimer = useRef(null);
+  const resumeTimer = useRef(null);
   const busyRef = useRef(false);
   const speakingRef = useRef(false);
   const ignoreUntil = useRef(0);
   const pendingRef = useRef(null);
+  const queueRef = useRef(null);
+  const lastSpokenRef = useRef('');
+  const lastStoryRef = useRef(null); // { _id, title, project } for "move it to done"
   const projectsRef = useRef(null);
   const heardRef = useRef(null);
+  const resumeRef = useRef(null);
   const pathRef = useRef(location.pathname);
   const quickEnds = useRef(0);
   const lastStart = useRef(0);
@@ -112,30 +177,52 @@ export default function SalinaAgent() {
   };
 
   /* ------------------------------ speaking ------------------------------ */
+  // The mic is switched off while she talks, so she can never hear (and obey) her own voice.
   const speak = useCallback((text) => new Promise((resolve) => {
     addLine('salina', text);
+    lastSpokenRef.current = norm(text);
     const synth = window.speechSynthesis;
     if (!synth) return resolve();
+
+    clearTimeout(resumeTimer.current);
+    const r = recogRef.current;
+    recogRef.current = null;
+    try { r?.abort(); } catch { /* ignore */ }
+
     synth.cancel();
     const u = new SpeechSynthesisUtterance(text);
     const v = pickVoice();
     if (v) { u.voice = v; u.lang = v.lang; } else { u.lang = 'en-US'; }
     u.rate = 1.03;
     u.pitch = 1.12;
+
     speakingRef.current = true;
     setPhase('speaking');
+    setHearing('');
+
+    let finished = false;
     const done = () => {
+      if (finished) return;
+      finished = true;
       speakingRef.current = false;
-      ignoreUntil.current = Date.now() + 500; // don't hear my own echo
+      ignoreUntil.current = Date.now() + 300;
+      resumeTimer.current = setTimeout(() => resumeRef.current?.(), 200);
       resolve();
     };
     u.onend = done;
     u.onerror = done;
+    setTimeout(done, Math.max(4000, text.length * 95)); // some browsers never fire onend
     synth.speak(u);
   }), [addLine]);
 
   const finish = () => {
     setPhase(enabledRef.current ? (awakeRef.current ? 'awake' : 'idle') : 'off');
+  };
+
+  const closeWindow = () => {
+    awakeRef.current = false;
+    clearTimeout(awakeTimer.current);
+    finish();
   };
 
   const openWindow = () => {
@@ -145,7 +232,7 @@ export default function SalinaAgent() {
     awakeTimer.current = setTimeout(() => {
       awakeRef.current = false;
       setPhase(enabledRef.current ? 'idle' : 'off');
-    }, 9000);
+    }, WINDOW_MS);
   };
 
   /* ------------------------------ helpers for actions ------------------------------ */
@@ -174,13 +261,52 @@ export default function SalinaAgent() {
 
   const askWhichProject = async () => {
     await speak('Which project do you mean? Say the project name, or open a project first.');
-    openWindow();
+  };
+
+  const loadStories = async (p) => {
+    const { data } = await api.get('/backlog', { params: { project: p._id } });
+    return (data.stories || []).map((s) => ({ ...s, projectName: p.name }));
+  };
+
+  const loadAllStories = async () => {
+    const projects = await getProjects();
+    const lists = await Promise.all(projects.map((p) => loadStories(p).catch(() => [])));
+    return lists.flat();
+  };
+
+  // find a story by the words you said ("login bug") or by "it" (the last one we talked about)
+  const pickStory = async (query, p) => {
+    const q = String(query || '').trim();
+    if ((!q || IT_RE.test(q)) && lastStoryRef.current) return lastStoryRef.current;
+    if (!q || IT_RE.test(q)) {
+      await speak('Which story do you mean?');
+      return null;
+    }
+    const words = norm(q).split(' ').filter((w) => w.length > 1 && !STOP_WORDS.includes(w));
+    if (!words.length) { await speak('Which story do you mean?'); return null; }
+    const stories = await loadStories(p);
+    const scored = stories
+      .map((s) => {
+        const t = norm(s.title);
+        return { s, score: words.filter((w) => t.includes(w)).length / words.length };
+      })
+      .filter((x) => x.score >= 0.6)
+      .sort((a, b) => b.score - a.score);
+    if (!scored.length) { await speak(`I couldn't find a story matching ${q} in ${p.name}.`); return null; }
+    if (scored.length > 1 && scored[0].score === scored[1].score) {
+      await speak(`I found two matches: ${scored[0].s.title}, and ${scored[1].s.title}. Which one?`);
+      return null;
+    }
+    return scored[0].s;
+  };
+
+  const remember = (s, projectId) => {
+    lastStoryRef.current = { _id: s._id, title: s.title, project: s.project || projectId };
   };
 
   const askConfirm = async (prompt, run) => {
     await speak(prompt);
     pendingRef.current = { run };
-    setPhase('awake');
     clearTimeout(pendingTimer.current);
     pendingTimer.current = setTimeout(() => { pendingRef.current = null; finish(); }, 15000);
   };
@@ -210,21 +336,21 @@ export default function SalinaAgent() {
           return;
         }
         await speak("I'm not sure which page you mean.");
-        openWindow();
         return;
       }
 
       case 'create_story': {
-        if (!params.title) { await speak('What should the story be called?'); openWindow(); return; }
+        if (!params.title) { await speak('What should the story be called?'); return; }
         const p = await resolveProject(params.project);
         if (!p) { await askWhichProject(); return; }
         try {
-          await api.post('/backlog', {
+          const { data } = await api.post('/backlog', {
             project: p._id,
             title: params.title,
             description: params.description || '',
             priority: ['Low', 'Medium', 'High', 'Critical'].includes(params.priority) ? params.priority : 'Medium',
           });
+          if (data?.story) remember(data.story, p._id);
           toast.success(`Story added to ${p.name}`);
           await speak(plan.speech || `Done. I added "${params.title}" to the ${p.name} backlog.`);
         } catch (err) {
@@ -233,25 +359,120 @@ export default function SalinaAgent() {
         return;
       }
 
+      case 'move_story': {
+        const status = toStatus(params.status);
+        if (!status) { await speak('Which column should I move it to? For example, In Progress or Done.'); return; }
+        const p = await resolveProject(params.project);
+        if (!p && !(IT_RE.test(params.story || '') && lastStoryRef.current)) { await askWhichProject(); return; }
+        const story = await pickStory(params.story, p);
+        if (!story) return;
+        try {
+          await api.put(`/backlog/${story._id}`, { status }, { params: { project: story.project || p._id } });
+          remember(story, p?._id);
+          toast.success(`Moved to ${status}`);
+          await speak(`Done. "${story.title}" is now ${status}.`);
+        } catch (err) {
+          await speak(failSpeech(err, "I couldn't move that story."));
+        }
+        return;
+      }
+
+      case 'assign_story': {
+        const p = await resolveProject(params.project);
+        if (!p && !(IT_RE.test(params.story || '') && lastStoryRef.current)) { await askWhichProject(); return; }
+        const project = p || (await getProjects()).find((x) => x._id === lastStoryRef.current?.project);
+        const person = norm(params.person || '');
+        if (!person) { await speak('Who should I assign it to?'); return; }
+        let target = null;
+        if (['me', 'myself', 'i'].includes(person)) {
+          target = { _id: user?.id || user?._id, name: 'you' };
+        } else {
+          const member = (project?.members || []).find((m) => {
+            const n = norm(m.user?.name || '');
+            return n && (n.includes(person) || person.includes(n.split(' ')[0]));
+          });
+          if (member) target = member.user;
+        }
+        if (!target) { await speak(`I couldn't find ${params.person} on that project.`); return; }
+        const story = await pickStory(params.story, project);
+        if (!story) return;
+        try {
+          await api.put(`/backlog/${story._id}`, { assignee: target._id }, { params: { project: story.project || project._id } });
+          remember(story, project?._id);
+          toast.success(`Assigned to ${target.name}`);
+          await speak(`Done. "${story.title}" is assigned to ${target.name === 'you' ? 'you' : target.name.split(' ')[0]}.`);
+        } catch (err) {
+          await speak(failSpeech(err, "I couldn't assign that story."));
+        }
+        return;
+      }
+
       case 'my_work': {
-        const projects = await getProjects();
         const myId = user?.id || user?._id;
-        const lists = await Promise.all(
-          projects.map((p) =>
-            api.get('/backlog', { params: { project: p._id } })
-              .then((r) => (r.data.stories || []).map((s) => ({ ...s, projectName: p.name })))
-              .catch(() => [])
-          )
-        );
-        const mine = lists.flat()
+        const mine = (await loadAllStories())
           .filter((s) => s.status !== 'Done' && (s.assignee?._id === myId || s.assignee === myId))
           .sort((a, b) => (PRIORITY_RANK[b.priority] || 0) - (PRIORITY_RANK[a.priority] || 0));
         if (!mine.length) {
           await speak("You've got nothing assigned right now. Nice and clear.");
         } else {
+          remember(mine[0]);
           const top = mine.slice(0, 3).map((s) => s.title.slice(0, 60)).join(', ');
           await speak(`You have ${mine.length} open ${mine.length === 1 ? 'story' : 'stories'}. The top ${Math.min(3, mine.length) === 1 ? 'one is' : 'ones are'}: ${top}.`);
         }
+        return;
+      }
+
+      case 'overdue': {
+        const now = Date.now();
+        const late = (await loadAllStories())
+          .filter((s) => s.status !== 'Done' && s.dueDate && new Date(s.dueDate).getTime() < now)
+          .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+        if (!late.length) await speak('Nothing is overdue. Great job.');
+        else {
+          remember(late[0]);
+          await speak(`${late.length} ${late.length === 1 ? 'story is' : 'stories are'} overdue. The oldest ${Math.min(3, late.length) === 1 ? 'is' : 'are'}: ${late.slice(0, 3).map((s) => s.title.slice(0, 50)).join(', ')}.`);
+        }
+        return;
+      }
+
+      case 'sprint_status': {
+        const p = await resolveProject(params.project);
+        if (!p) { await askWhichProject(); return; }
+        const [{ data }, stories] = await Promise.all([api.get('/sprints', { params: { project: p._id } }), loadStories(p)]);
+        const sprint = (data.sprints || []).find((x) => x.status === 'Active');
+        if (!sprint) { await speak(`There's no active sprint in ${p.name} right now.`); return; }
+        const inSprint = stories.filter((s) => (s.sprint?._id || s.sprint) === sprint._id);
+        const done = inSprint.filter((s) => s.status === 'Done');
+        const pts = (list) => list.reduce((sum, s) => sum + (s.storyPoints || 0), 0);
+        const daysLeft = Math.ceil((new Date(sprint.endDate) - Date.now()) / 86400000);
+        const left = daysLeft > 0 ? `${daysLeft} ${daysLeft === 1 ? 'day' : 'days'} left` : daysLeft === 0 ? 'it ends today' : `it ended ${Math.abs(daysLeft)} days ago`;
+        await speak(`${sprint.name} has ${done.length} of ${inSprint.length} stories done${pts(inSprint) ? `, that's ${pts(done)} of ${pts(inSprint)} points` : ''}, and ${left}.`);
+        return;
+      }
+
+      case 'briefing': {
+        const myId = user?.id || user?._id;
+        const hour = new Date().getHours();
+        const part = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening';
+        const [all, notif] = await Promise.all([
+          loadAllStories().catch(() => []),
+          api.get('/notifications').then((r) => r.data.notifications || []).catch(() => []),
+        ]);
+        const mine = all.filter((s) => s.status !== 'Done' && (s.assignee?._id === myId || s.assignee === myId));
+        const high = mine.filter((s) => ['High', 'Critical'].includes(s.priority)).length;
+        const late = all.filter((s) => s.status !== 'Done' && s.dueDate && new Date(s.dueDate).getTime() < Date.now()).length;
+        const unread = notif.filter((n) => !n.read).length;
+        let site = '';
+        const p = await resolveProject('');
+        if (p) {
+          const h = await api.get(`/devops/${p._id}/health`).then((r) => r.data).catch(() => null);
+          if (h?.configured) site = h.up ? ` ${p.name} is up and running.` : ` Heads up, ${p.name} looks down.`;
+        }
+        await speak(
+          `Good ${part}, ${firstName()}. You have ${mine.length} open ${mine.length === 1 ? 'story' : 'stories'}${high ? `, ${high} high priority` : ''}.` +
+          `${late ? ` ${late} ${late === 1 ? 'is' : 'are'} overdue.` : ''}` +
+          ` ${unread ? `And ${unread} unread ${unread === 1 ? 'notification' : 'notifications'}.` : 'Notifications are clear.'}${site}`
+        );
         return;
       }
 
@@ -287,7 +508,7 @@ export default function SalinaAgent() {
 
       case 'announce': {
         if (user?.systemRole !== 'admin') { await speak('Only admins can post announcements.'); return; }
-        if (!params.title && !params.message) { await speak('What should the announcement say?'); openWindow(); return; }
+        if (!params.title && !params.message) { await speak('What should the announcement say?'); return; }
         const title = params.title || params.message.slice(0, 60);
         const message = params.message || params.title;
         await askConfirm(`${plan.speech || `I'll announce "${title}" to everyone.`} Should I go ahead?`, async () => {
@@ -318,33 +539,42 @@ export default function SalinaAgent() {
 
       default: // chat / unknown
         await speak(plan.speech || "Sorry, I didn't catch that.");
-        if (plan.action === 'unknown') openWindow();
     }
+  };
+
+  const drainQueue = () => {
+    const q = queueRef.current;
+    queueRef.current = null;
+    if (q) setTimeout(() => heardRef.current?.(q, true), 150);
   };
 
   const runCommand = async (text) => {
     busyRef.current = true;
-    clearTimeout(awakeTimer.current);
-    awakeRef.current = false;
+    clearTimeout(awakeTimer.current); // stay awake while working
+    awakeRef.current = true;
     setPhase('thinking');
     addLine('you', text);
+    let dismissed = false;
     try {
       let plan = parseLocal(text);
       if (!plan) {
         try {
-          const { data } = await api.post('/ai/salina', { text, path: pathRef.current });
+          const { data } = await api.post('/ai/salina', { text, path: pathRef.current, lastStory: lastStoryRef.current?.title || '' });
           plan = data;
         } catch {
           await speak("Sorry, my AI side isn't responding right now. Quick commands like opening pages still work.");
           return;
         }
       }
+      dismissed = plan.action === 'dismiss';
       await execute(plan);
     } catch (err) {
       await speak(failSpeech(err, 'Something went wrong on my side. Try again?'));
     } finally {
       busyRef.current = false;
-      finish();
+      if (dismissed) closeWindow();
+      else openWindow(); // conversation mode: you can give the next command straight away
+      drainQueue();
     }
   };
 
@@ -352,17 +582,33 @@ export default function SalinaAgent() {
     busyRef.current = true;
     try {
       await speak(`Hi ${firstName()}, how can I help you?`);
-      openWindow();
     } finally {
       busyRef.current = false;
+      openWindow();
+      drainQueue();
     }
+  };
+
+  const isEcho = (text) => {
+    const t = norm(text);
+    return t.length > 6 && lastSpokenRef.current.includes(t);
   };
 
   // every sentence the mic hears (or the user types) comes through here
   const handleHeard = async (raw, forced = false) => {
     const text = raw.trim();
     if (!text) return;
-    if (!forced && (speakingRef.current || Date.now() < ignoreUntil.current || busyRef.current)) return;
+
+    if (!forced) {
+      if (speakingRef.current || Date.now() < ignoreUntil.current) return;
+      if (isEcho(text)) return;
+    }
+
+    // I'm busy: keep the latest thing you said and handle it right after
+    if (busyRef.current) {
+      if (forced || awakeRef.current || WAKE_RE.test(text)) queueRef.current = text;
+      return;
+    }
 
     // waiting for a yes / no
     if (pendingRef.current) {
@@ -378,16 +624,19 @@ export default function SalinaAgent() {
         else await speak("I didn't hear a clear yes, so I'll skip that.");
       } finally {
         busyRef.current = false;
-        finish();
+        openWindow();
+        drainQueue();
       }
       return;
     }
 
     const stripWake = (s) => s.replace(WAKE_RE, '').replace(/^[\s,.:;!?-]+/, '').trim();
 
-    // command window is open (she just greeted) or the user typed it
+    // conversation is open (she just greeted or answered) or the user typed it
     if (awakeRef.current || forced) {
-      await runCommand(stripWake(text) || text);
+      const cmd = stripWake(text);
+      if (!cmd && WAKE_RE.test(text)) { await wake(); return; } // just "Salina" again
+      await runCommand(cmd || text);
       return;
     }
 
@@ -407,24 +656,34 @@ export default function SalinaAgent() {
     window.speechSynthesis?.cancel();
     clearTimeout(awakeTimer.current);
     clearTimeout(pendingTimer.current);
+    clearTimeout(resumeTimer.current);
     awakeRef.current = false;
     pendingRef.current = null;
+    queueRef.current = null;
     speakingRef.current = false;
+    setHearing('');
   }, []);
 
   const startRecognition = useCallback(() => {
     if (!SR || recogRef.current) return;
     const r = new SR();
     r.continuous = true;
-    r.interimResults = false;
+    r.interimResults = true; // only used to show what she is hearing; commands run on final results
     r.lang = /^en/i.test(navigator.language || '') ? navigator.language : 'en-US';
 
+    r.onstart = () => {
+      // she just finished talking and is listening again: soft chime
+      if (awakeRef.current && !busyRef.current && !pendingRef.current) chime();
+    };
     r.onresult = (e) => {
+      let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (!e.results[i].isFinal) continue;
         const text = e.results[i][0].transcript.trim();
+        if (!e.results[i].isFinal) { interim = text; continue; }
+        setHearing('');
         if (text) heardRef.current?.(text);
       }
+      if (interim && !speakingRef.current) setHearing(interim);
     };
     r.onerror = (e) => {
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
@@ -433,9 +692,9 @@ export default function SalinaAgent() {
       }
     };
     r.onend = () => {
-      if (recogRef.current !== r) return; // replaced or stopped on purpose
+      if (recogRef.current !== r) return; // replaced or paused on purpose
       recogRef.current = null;
-      if (!enabledRef.current) return;
+      if (!enabledRef.current || speakingRef.current) return;
       // the browser ends sessions every so often - restart, but give up if it keeps dying instantly
       quickEnds.current = Date.now() - lastStart.current < 800 ? quickEnds.current + 1 : 0;
       if (quickEnds.current >= 6) {
@@ -443,13 +702,17 @@ export default function SalinaAgent() {
         setEnabled(false);
         return;
       }
-      setTimeout(() => { if (enabledRef.current) startRecognition(); }, 300);
+      setTimeout(() => { if (enabledRef.current && !speakingRef.current) startRecognition(); }, 300);
     };
 
     recogRef.current = r;
     lastStart.current = Date.now();
     try { r.start(); } catch { recogRef.current = null; }
   }, []);
+
+  resumeRef.current = () => {
+    if (enabledRef.current && SR && !recogRef.current && !speakingRef.current) startRecognition();
+  };
 
   useEffect(() => {
     enabledRef.current = enabled;
@@ -481,6 +744,8 @@ export default function SalinaAgent() {
     heardRef.current?.(v, true);
   };
 
+  const stopSpeaking = () => window.speechSynthesis?.cancel();
+
   const listening = enabled && ['idle', 'awake', 'speaking'].includes(phase);
 
   return (
@@ -497,6 +762,9 @@ export default function SalinaAgent() {
               </p>
             </div>
             <div className="flex items-center gap-1.5">
+              {phase === 'speaking' && (
+                <button onClick={stopSpeaking} className="btn-ghost px-2 py-1.5" title="Stop talking" aria-label="Stop talking"><VolumeX size={14} /></button>
+              )}
               {SR && (
                 <button
                   onClick={() => setEnabled((v) => !v)}
@@ -514,7 +782,7 @@ export default function SalinaAgent() {
             {log.length === 0 ? (
               <p className="text-ink-500">
                 {SR
-                  ? 'Turn voice on, then say "Salina". Try: "open DevOps", "what are my tasks", "add a story to fix the login bug".'
+                  ? 'Turn voice on, then say "Salina". Try: "open DevOps", "give me my briefing", "move login bug to done", "how is the sprint going".'
                   : 'Voice needs Chrome or Edge. You can still type commands below.'}
               </p>
             ) : (
@@ -524,6 +792,7 @@ export default function SalinaAgent() {
                 </p>
               ))
             )}
+            {hearing && <p className="text-right text-xs italic text-ink-500">hearing: {hearing}</p>}
           </div>
 
           <form onSubmit={submitTyped} className="flex gap-2">
