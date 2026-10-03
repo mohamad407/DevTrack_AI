@@ -413,3 +413,61 @@ Include these sections in Markdown:
 - Monitoring`;
   return complete(prompt, { temperature: 0.4, max_tokens: 2048 });
 }
+
+// ---------------------------------------------------------------------------
+// Salina - voice agent brain. Turns a spoken sentence into ONE structured action.
+// The frontend executes the action with the user's own login, so permissions
+// are still enforced by the normal API routes.
+// ---------------------------------------------------------------------------
+const SALINA_ACTIONS = ["navigate", "create_story", "my_work", "devops_status", "notifications", "announce", "deploy", "chat", "unknown"];
+const SALINA_TARGETS = ["dashboard", "projects", "backlog", "sprints", "board", "analytics", "devops", "team", "ai", "profile", "admin"];
+const SALINA_PRIORITIES = ["Low", "Medium", "High", "Critical"];
+const SALINA_SEVERITIES = ["info", "warning", "critical"];
+const SALINA_ENVS = ["Development", "Testing", "Production"];
+
+export async function parseSalinaCommand(text, context = {}) {
+  const extraSystem = `You are Salina, the friendly voice assistant inside DevTrack AI. You sound like a warm, casual, helpful woman teammate.
+Your replies are read aloud, so: plain spoken English, no markdown, no emojis, no lists, at most 2 short sentences. Never say your own name.
+
+Turn the user's request into exactly ONE action. Return ONLY JSON like:
+{"action":"...","params":{...},"speech":"..."}
+
+Actions and params:
+- navigate: {"target":"dashboard|projects|backlog|sprints|board|analytics|devops|team|ai|profile|admin","project":"project name or empty"}
+- create_story: {"title":"short story title","description":"one or two sentences or empty","priority":"Low|Medium|High|Critical","project":"project name or empty"}
+- my_work: {}  (the user's own open stories)
+- devops_status: {"project":"project name or empty"}  (is the site up, deployment health)
+- notifications: {"markRead":true|false}
+- announce: {"title":"short title","message":"the announcement text","severity":"info|warning|critical"}  (posting an announcement to everyone)
+- deploy: {"environment":"Development|Testing|Production","project":"project name or empty"}
+- chat: {}  (any other question or small talk - put the full short answer in "speech")
+- unknown: {}  (unclear request - ask one short clarifying question in "speech")
+
+"speech" is what you say first, e.g. "Sure, adding that story now." For announce and deploy, describe exactly what you are about to do in one sentence.
+User's first name: ${context.firstName || "there"}. Current page: ${context.path || "unknown"}. Today: ${context.today || ""}.`;
+
+  const raw = await complete(`User said: "${String(text).slice(0, 300)}"`, {
+    extraSystem,
+    temperature: 0.2,
+    max_tokens: 400,
+    jsonMode: true,
+  });
+
+  const out = raw && typeof raw === "object" ? raw : {};
+  const params = out.params && typeof out.params === "object" ? out.params : {};
+  let action = SALINA_ACTIONS.includes(out.action) ? out.action : "chat";
+  let speech = typeof out.speech === "string" ? out.speech.trim().slice(0, 300) : "";
+
+  // keep params inside known values
+  if (params.target && !SALINA_TARGETS.includes(params.target)) action = "unknown";
+  if (params.priority && !SALINA_PRIORITIES.includes(params.priority)) params.priority = "Medium";
+  if (params.severity && !SALINA_SEVERITIES.includes(params.severity)) params.severity = "info";
+  if (params.environment && !SALINA_ENVS.includes(params.environment)) params.environment = "Production";
+  if (typeof params.title === "string") params.title = params.title.trim().slice(0, 140);
+  if (typeof params.message === "string") params.message = params.message.trim().slice(0, 500);
+  if (typeof params.description === "string") params.description = params.description.trim().slice(0, 500);
+  if (typeof params.project === "string") params.project = params.project.trim().slice(0, 80);
+
+  if (!speech && (action === "chat" || action === "unknown")) speech = "Sorry, I didn't quite catch that. Could you say it again?";
+  return { action, params, speech };
+}
