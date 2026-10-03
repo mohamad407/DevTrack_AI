@@ -7,6 +7,7 @@ const router = Router();
 router.use(protect);
 
 router.post('/chat', aiController.chat);
+router.post('/salina', aiController.salina);
 router.post('/generate-stories', aiController.generateStory);
 router.post('/estimate-points', aiController.estimatePoints);
 router.post('/prioritize-backlog', aiController.prioritize);
