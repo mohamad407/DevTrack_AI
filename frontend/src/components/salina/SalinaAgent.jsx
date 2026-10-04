@@ -34,7 +34,7 @@ const PHASE_LABEL = {
 
 const TARGETS = {
   dashboard: 'dashboard', home: 'dashboard', overview: 'dashboard', project: 'projects', projects: 'projects',
-  backlog: 'backlog', sprint: 'sprints', sprints: 'sprints', board: 'board', kanban: 'board', analytics: 'analytics',
+  backlog: 'backlog', 'product backlog': 'backlog', sprint: 'sprints', sprints: 'sprints', board: 'board', kanban: 'board', analytics: 'analytics',
   devops: 'devops', 'dev ops': 'devops', team: 'team', assistant: 'ai', 'ai assistant': 'ai', profile: 'profile', admin: 'admin',
 };
 
@@ -55,6 +55,11 @@ const toStatus = (s = '') => {
 };
 
 const PRIORITY_RANK = { Critical: 4, High: 3, Medium: 2, Low: 1 };
+const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
+const ROLES = ['Admin', 'Scrum Master', 'Developer', 'Tester', 'Product Owner'];
+const ENVIRONMENTS = ['Development', 'Testing', 'Production'];
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const RETRO_LABELS = { wentWell: 'what went well', toImprove: 'what to improve', actionItems: 'action items' };
 const IT_RE = /^(it|that|this|that one|this one|the story|that story|this story|same one)$/i;
 const STOP_WORDS = ['the', 'a', 'an', 'story', 'task', 'ticket', 'item', 'one', 'please'];
 
@@ -74,11 +79,14 @@ const pickVoice = () => {
 function parseLocal(text) {
   const t = text.toLowerCase().replace(/[.,!?]/g, ' ').replace(/\s+/g, ' ').trim();
 
+  // compound requests ("... and then ...") always go to the AI so every step is planned
+  if (/\b(and then|then|after that|and also|also)\b/.test(t)) return null;
+
   if (/^(stop|cancel|quiet|be quiet|never mind|nevermind|that's all|thats all|that is all|i'm done|im done|goodbye|bye)$/.test(t) || /^(thank you|thanks)/.test(t)) {
     return { action: 'dismiss', params: {}, speech: 'Anytime!' };
   }
 
-  const nav = t.match(/^(?:open|go to|show me|show|take me to|navigate to|launch)\s+(?:the\s+|my\s+)?(dashboard|home|overview|projects?|backlog|sprints?|board|kanban|analytics|devops|dev ops|team|ai assistant|assistant|profile|admin)(?:\s+(?:of|for|in)\s+(.+))?$/);
+  const nav = t.match(/^(?:(?:open|go to|show me|show|take me to|navigate to|launch)\s+)?(?:the\s+|my\s+)?(dashboard|home|overview|projects?|product backlog|backlog|sprints?|board|kanban|analytics|devops|dev ops|team|ai assistant|assistant|profile|admin)(?:\s+(?:of|for|in)\s+(.+))?$/);
   if (nav) {
     const label = nav[1] === 'dev ops' ? 'DevOps' : nav[1];
     return { action: 'navigate', params: { target: TARGETS[nav[1]], project: nav[2] || '' }, speech: `Sure, opening ${label}.` };
@@ -86,11 +94,11 @@ function parseLocal(text) {
 
   const orig = text.replace(/[.,!?]/g, ' ').replace(/\s+/g, ' ').trim(); // keeps the capitals you said
   const proj = orig.match(/^(?:create|make|start|add|set up)\s+(?:a\s+|an\s+|one\s+)?(?:new\s+)?project(?:\s+(?:called|named|name)\s+(.+))?$/i);
-  if (proj) return { action: 'create_project', params: { name: proj[1] || '', description: '' }, speech: '' };
+  if (proj && !/\b(and|with|then)\b/i.test(proj[1] || '')) return { action: 'create_project', params: { name: proj[1] || '', description: '' }, speech: '' };
 
   // "move login bug to in progress" / "mark it as done"
   const move = t.match(/^(?:move|put|set|change|update)\s+(.+?)\s+(?:to|as|into)\s+(.+)$/);
-  if (move && toStatus(move[2])) return { action: 'move_story', params: { story: move[1], status: toStatus(move[2]), project: '' }, speech: '' };
+  if (move && toStatus(move[2]) && !/\band\b/.test(move[1])) return { action: 'move_story', params: { story: move[1], status: toStatus(move[2]), project: '' }, speech: '' };
   const mark = t.match(/^mark\s+(.+?)\s+(?:as\s+)?(done|complete|completed|finished)$/);
   if (mark) return { action: 'move_story', params: { story: mark[1], status: 'Done', project: '' }, speech: '' };
 
@@ -139,7 +147,7 @@ const chime = () => {
 };
 
 export default function SalinaAgent() {
-  const { user } = useAuth();
+  const { user, refreshSession } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -167,6 +175,8 @@ export default function SalinaAgent() {
   const slotTimer = useRef(null);
   const lastSpokenRef = useRef('');
   const lastStoryRef = useRef(null); // { _id, title, project } for "move it to done"
+  const lastProjectRef = useRef(null); // the project we are working in
+  const sprintsRef = useRef([]);
   const projectsRef = useRef(null);
   const heardRef = useRef(null);
   const resumeRef = useRef(null);
@@ -242,8 +252,14 @@ export default function SalinaAgent() {
   };
 
   /* ------------------------------ helpers for actions ------------------------------ */
-  const getProjects = async () => {
-    if (projectsRef.current) return projectsRef.current;
+  const myId = () => user?.id || user?._id;
+  const isAdmin = () => user?.systemRole === 'admin';
+  const say = async (msg) => { await speak(msg); return true; };
+  const no = async (msg) => { await speak(msg); return false; };
+  const pid = (story, p) => story.project || p._id;
+
+  const getProjects = async (force = false) => {
+    if (projectsRef.current && !force) return projectsRef.current;
     const { data } = await api.get('/projects');
     projectsRef.current = data.projects || [];
     return projectsRef.current;
@@ -251,22 +267,18 @@ export default function SalinaAgent() {
 
   const resolveProject = async (hint) => {
     const projects = await getProjects();
-    const h = (hint || '').toLowerCase().trim();
+    let h = norm(hint);
+    if (/^(this|current|the|it|here|my|this project|current project|the project|my project)$/.test(h)) h = '';
+    const setLast = (p) => { lastProjectRef.current = p; return p; };
     if (h) {
-      const found = projects.find((p) => p.name.toLowerCase().includes(h) || h.includes(p.name.toLowerCase()));
-      if (found) return found;
+      const found = projects.find((p) => { const n = norm(p.name); return n === h || n.includes(h) || h.includes(n); });
+      return found ? setLast(found) : null;
     }
     const m = pathRef.current.match(/projects\/([a-f0-9]{24})/);
-    if (m) {
-      const found = projects.find((p) => p._id === m[1]);
-      if (found) return found;
-    }
-    if (projects.length === 1) return projects[0];
+    if (m) { const f = projects.find((p) => p._id === m[1]); if (f) return setLast(f); }
+    if (lastProjectRef.current) { const f = projects.find((p) => p._id === lastProjectRef.current._id); if (f) return f; }
+    if (projects.length === 1) return setLast(projects[0]);
     return null;
-  };
-
-  const askWhichProject = async () => {
-    await speak('Which project do you mean? Say the project name, or open a project first.');
   };
 
   const loadStories = async (p) => {
@@ -280,219 +292,560 @@ export default function SalinaAgent() {
     return lists.flat();
   };
 
-  // find a story by the words you said ("login bug") or by "it" (the last one we talked about)
-  const pickStory = async (query, p) => {
-    const q = String(query || '').trim();
-    if ((!q || IT_RE.test(q)) && lastStoryRef.current) return lastStoryRef.current;
-    if (!q || IT_RE.test(q)) {
-      await speak('Which story do you mean?');
-      return null;
-    }
-    const words = norm(q).split(' ').filter((w) => w.length > 1 && !STOP_WORDS.includes(w));
-    if (!words.length) { await speak('Which story do you mean?'); return null; }
-    const stories = await loadStories(p);
-    const scored = stories
-      .map((s) => {
-        const t = norm(s.title);
-        return { s, score: words.filter((w) => t.includes(w)).length / words.length };
-      })
-      .filter((x) => x.score >= 0.6)
-      .sort((a, b) => b.score - a.score);
-    if (!scored.length) { await speak(`I couldn't find a story matching ${q} in ${p.name}.`); return null; }
-    if (scored.length > 1 && scored[0].score === scored[1].score) {
-      await speak(`I found two matches: ${scored[0].s.title}, and ${scored[1].s.title}. Which one?`);
-      return null;
-    }
-    return scored[0].s;
-  };
-
   const remember = (s, projectId) => {
     lastStoryRef.current = { _id: s._id, title: s.title, project: s.project || projectId };
   };
 
-  const askConfirm = async (prompt, run) => {
-    await speak(prompt);
-    pendingRef.current = { run };
-    clearTimeout(pendingTimer.current);
-    pendingTimer.current = setTimeout(() => { pendingRef.current = null; finish(); }, 15000);
+  const scoreStories = (stories, words) =>
+    stories
+      .map((s) => ({ s, score: words.filter((w) => norm(s.title).includes(w)) .length / words.length }))
+      .filter((x) => x.score >= 0.6)
+      .sort((x, y) => y.score - x.score);
+
+  // find a story by the words you said ("login bug") or by "it" (the last one we talked about).
+  // If it is not in the current project, look in your other projects too.
+  const pickStory = async (query, p, searchAll = false) => {
+    const q = String(query || '').trim();
+    if (IT_RE.test(q) && lastStoryRef.current) return { story: lastStoryRef.current };
+    const words = norm(q).split(' ').filter((w) => w.length > 1 && !STOP_WORDS.includes(w));
+    if (!words.length) return { error: 'Which story do you mean?', ask: true };
+    let scored = scoreStories(await loadStories(p), words);
+    let owner = p;
+    if (!scored.length && searchAll) {
+      const projects = await getProjects();
+      const lists = await Promise.all(projects.filter((x) => x._id !== p._id).map((x) => loadStories(x).catch(() => [])));
+      scored = scoreStories(lists.flat(), words);
+      if (scored.length) owner = projects.find((x) => x._id === scored[0].s.project) || p;
+    }
+    if (!scored.length) return { error: `I couldn't find a story matching ${q} in ${p.name}.` };
+    if (scored.length > 1 && scored[0].score === scored[1].score) {
+      return { error: `I found two matches: ${scored[0].s.title}, and ${scored[1].s.title}. Which one?`, ask: true };
+    }
+    return { story: scored[0].s, project: owner };
   };
 
-  // ask a question and treat your next sentence as the answer (e.g. "what should it be called?")
-  const askSlot = async (prompt, fill) => {
+  const findMember = (p, name) => {
+    const q = norm(name);
+    if (!q) return null;
+    const people = (p.members || []).map((m) => m.user).filter(Boolean);
+    if (['me', 'myself', 'i'].includes(q)) return people.find((u) => u._id === myId()) || { _id: myId(), name: user?.name || 'you' };
+    return people.find((u) => { const n = norm(u.name); return n && (n.includes(q) || q.includes(n.split(' ')[0])); }) || null;
+  };
+
+  const findUserByText = async (text) => {
+    let q = String(text || '').toLowerCase().trim().replace(/\s+at\s+/g, '@').replace(/\s+dot\s+/g, '.');
+    if (q.includes('@')) q = q.replace(/\s+/g, '');
+    const { data } = await api.get('/users/search', { params: { q: q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') } });
+    return data.users || [];
+  };
+
+  const pickSprint = async (text, p, prefer = 'Active') => {
+    const { data } = await api.get('/sprints', { params: { project: p._id } });
+    const sprints = data.sprints || [];
+    sprintsRef.current = sprints;
+    if (!sprints.length) { await speak(`There are no sprints in ${p.name} yet.`); return null; }
+    const q = norm(text);
+    if (q && !/^(active|current|this|this sprint|current sprint|the active sprint|next|upcoming|planned|latest|new)$/.test(q)) {
+      const byName = sprints.find((s) => norm(s.name).includes(q) || q.includes(norm(s.name)));
+      const num = q.match(/\d+/)?.[0];
+      const byNum = num && sprints.find((s) => (norm(s.name).match(/\d+/) || [])[0] === num);
+      if (byName || byNum) return byName || byNum;
+      await speak(`I couldn't find a sprint called ${text}.`);
+      return null;
+    }
+    const want = /^(next|upcoming|planned|new|latest)$/.test(q) ? 'Planned' : prefer;
+    const f = sprints.find((s) => s.status === want) || sprints.find((s) => s.status === 'Active') || sprints.find((s) => s.status === 'Planned');
+    if (!f) { await speak('I could not find a suitable sprint.'); return null; }
+    return f;
+  };
+
+  /* ------------------------------ ask / confirm / run steps ------------------------------ */
+  // ask a question and treat your next sentence as the answer
+  const askSlot = async (prompt, fill, rest = []) => {
     await speak(prompt);
-    slotRef.current = { fill };
+    slotRef.current = {
+      fill: async (answer) => {
+        const r = await fill(answer);
+        if (r === true) await runSteps(rest);
+      },
+    };
     clearTimeout(slotTimer.current);
     slotTimer.current = setTimeout(() => { slotRef.current = null; }, 20000);
+    return 'wait';
   };
 
-  /* ------------------------------ actions ------------------------------ */
-  const execute = async (plan) => {
+  // ask for a spoken yes / no before something risky
+  const askConfirm = async (prompt, run, rest = []) => {
+    await speak(prompt);
+    pendingRef.current = {
+      run: async () => {
+        let r = false;
+        try { r = await run(); } catch (err) { await speak(failSpeech(err, 'That did not work.')); }
+        if (r === true) await runSteps(rest);
+      },
+    };
+    clearTimeout(pendingTimer.current);
+    pendingTimer.current = setTimeout(() => { pendingRef.current = null; finish(); }, 15000);
+    return 'wait';
+  };
+
+  const withProject = async (plan, rest, fn) => {
+    const projects = await getProjects();
+    let p = await resolveProject(plan.params?.project);
+    if (!p && !plan.params?.project && IT_RE.test(plan.params?.story || '') && lastStoryRef.current?.project) {
+      p = projects.find((x) => x._id === lastStoryRef.current.project) || null;
+    }
+    if (p) return fn(p);
+    if (!projects.length) return no("You don't have any projects yet. Say create a new project to make one.");
+    if (plan._asked) return no("Sorry, I couldn't find that project.");
+    const names = projects.slice(0, 4).map((x) => x.name).join(', ');
+    return askSlot(
+      `Which project do you mean? You have ${names}.`,
+      (answer) => execute({ ...plan, _asked: true, params: { ...plan.params, project: answer } }, rest),
+      rest
+    );
+  };
+
+  const withStory = async (plan, rest, p, fn) => {
+    const r = await pickStory(plan.params?.story, p, !plan.params?.project);
+    if (r.story) return fn(r.story, r.project || p);
+    if (r.ask && !plan._askedStory) {
+      return askSlot(r.error, (a) => execute({ ...plan, _askedStory: true, params: { ...plan.params, story: a } }, rest), rest);
+    }
+    return no(r.error);
+  };
+
+  const runSteps = async (steps) => {
+    for (let i = 0; i < steps.length; i++) {
+      const r = await execute(steps[i], steps.slice(i + 1));
+      if (r !== true) return r;
+    }
+    return true;
+  };
+
+  const execute = async (plan, rest = []) => {
+    try {
+      return await perform(plan, rest);
+    } catch (err) {
+      return no(failSpeech(err, 'Something went wrong on my side.'));
+    }
+  };
+
+  /* ------------------------------ the actions ------------------------------ */
+  const perform = async (plan, rest) => {
     const params = plan.params || {};
+    const P = (fn) => withProject(plan, rest, fn);
+    const ST = (fn) => P((p) => withStory(plan, rest, p, (story, owner) => fn(owner, story)));
+    const confirm = (prompt, run) => askConfirm(prompt, run, rest);
+    const ask = (prompt, key, max = 140) =>
+      askSlot(prompt, (a) => execute({ ...plan, params: { ...params, [key]: a.slice(0, max) } }, rest), rest);
+    const refreshProjects = () => getProjects(true).catch(() => null);
+
     switch (plan.action) {
       case 'dismiss':
-        await speak(plan.speech || 'Anytime!');
-        return;
+        return say(plan.speech || 'Anytime!');
 
+      /* ---------- pages ---------- */
       case 'navigate': {
         const t = params.target;
         const base = { dashboard: '/dashboard', projects: '/dashboard/projects', ai: '/dashboard/ai-assistant', profile: '/dashboard/profile', admin: '/dashboard/admin' };
-        if (t === 'admin' && user?.systemRole !== 'admin') { await speak('Only admins can open the admin panel.'); return; }
-        if (base[t]) {
-          await speak(plan.speech || 'Sure.');
-          navigate(base[t]);
-          return;
-        }
+        if (t === 'admin' && !isAdmin()) return no('Only admins can open the admin panel.');
+        if (base[t]) { await speak('Sure.'); navigate(base[t]); return true; }
         if (['backlog', 'sprints', 'board', 'analytics', 'devops', 'team'].includes(t)) {
-          const p = await resolveProject(params.project);
-          if (!p) { await askWhichProject(); return; }
-          await speak(plan.speech || 'Sure.');
-          navigate(`/dashboard/projects/${p._id}/${t}`);
-          return;
+          return P(async (p) => {
+            await speak(`Opening ${t === 'devops' ? 'DevOps' : t} for ${p.name}.`);
+            navigate(`/dashboard/projects/${p._id}/${t}`);
+            return true;
+          });
         }
-        await speak("I'm not sure which page you mean.");
-        return;
+        if (plan._asked) return no("Sorry, I don't know that page.");
+        return askSlot('Which page should I open?', (a) => execute({ ...plan, _asked: true, params: { ...params, target: TARGETS[norm(a)] || '' } }, rest), rest);
       }
 
+      /* ---------- projects ---------- */
+      case 'create_project': {
+        const name = (params.name || '').trim();
+        if (!name) return ask('Sure. What should the project be called?', 'name', 80);
+        const { data } = await api.post('/projects', { name, description: params.description || '' });
+        const list = await refreshProjects();
+        lastProjectRef.current = list?.find((x) => x._id === data.project?._id) || data.project || null;
+        toast.success(`Project "${name}" created`);
+        return say(`Done. I created the project ${name}. You'll find it in your Projects list.`);
+      }
+
+      case 'rename_project':
+        if (!params.name) return ask('What should the new name be?', 'name', 80);
+        return P(async (p) => {
+          await api.put(`/projects/${p._id}`, { name: params.name, description: p.description || '', githubRepo: p.githubRepo || '', status: p.status });
+          await refreshProjects();
+          return say(`Done. ${p.name} is now called ${params.name}.`);
+        });
+
+      case 'archive_project':
+        return P((p) => confirm(`Archive ${p.name}? It will leave your active projects. Are you sure?`, async () => {
+          await api.put(`/projects/${p._id}`, { name: p.name, description: p.description || '', githubRepo: p.githubRepo || '', status: 'archived' });
+          await refreshProjects();
+          return say(`Done. ${p.name} is archived.`);
+        }));
+
+      case 'delete_project':
+        return P((p) => confirm(`This permanently deletes ${p.name} and everything in it. Are you absolutely sure?`, async () => {
+          await api.delete(`/projects/${p._id}`);
+          lastProjectRef.current = null;
+          lastStoryRef.current = null;
+          await refreshProjects();
+          if (pathRef.current.includes(p._id)) navigate('/dashboard/projects');
+          return say(`Done. ${p.name} has been deleted.`);
+        }));
+
+      case 'list_projects': {
+        const projects = await getProjects(true);
+        if (!projects.length) return say("You don't have any projects yet. Want me to create one?");
+        return say(`You have ${projects.length} ${projects.length === 1 ? 'project' : 'projects'}: ${projects.slice(0, 6).map((p) => p.name).join(', ')}.`);
+      }
+
+      case 'set_repo': {
+        if (!params.repo) return ask('Which GitHub repository? Say it as owner slash repo.', 'repo', 100);
+        const repo = String(params.repo).replace(/\s+slash\s+/gi, '/').replace(/\s+/g, '');
+        return P(async (p) => {
+          await api.put(`/devops/${p._id}/repo`, { githubRepo: repo });
+          await refreshProjects();
+          return say(`Done. ${p.name} is connected to ${repo}.`);
+        });
+      }
+
+      case 'set_live_url': {
+        if (!params.url) return ask("What's the live website address?", 'url', 140);
+        let u = String(params.url).toLowerCase().replace(/\s+dot\s+/g, '.').replace(/\s+slash\s+/g, '/').replace(/\s+/g, '');
+        if (!/^https?:\/\//.test(u)) u = `https://${u}`;
+        return P(async (p) => {
+          await api.put(`/devops/${p._id}/config`, { liveUrl: u });
+          await refreshProjects();
+          return say(`Done. I will watch ${u} for ${p.name}.`);
+        });
+      }
+
+      /* ---------- team ---------- */
+      case 'list_team':
+        return P((p) => {
+          const m = (p.members || []).filter((x) => x.user);
+          return say(`${p.name} has ${m.length} ${m.length === 1 ? 'person' : 'people'}: ${m.slice(0, 6).map((x) => `${x.user.name.split(' ')[0]} as ${x.role}`).join(', ')}.`);
+        });
+
+      case 'invite_member': {
+        if (!params.person) return ask('Who should I invite? Say their name or email.', 'person', 100);
+        return P(async (p) => {
+          const users = await findUserByText(params.person);
+          if (!users.length) return no(`I couldn't find anyone called ${params.person}. They need to sign up first.`);
+          const wanted = norm(params.person);
+          let target = users.length === 1 ? users[0] : users.find((u) => norm(u.name) === wanted || u.email.toLowerCase() === params.person.toLowerCase());
+          if (!target) {
+            if (plan._asked) return no('There are several people with that name. Please add them from the Team page.');
+            return askSlot(`I found ${users.slice(0, 3).map((u) => u.name).join(', ')}. Which one? Say the full name.`, (a) => execute({ ...plan, _asked: true, params: { ...params, person: a } }, rest), rest);
+          }
+          const role = ROLES.includes(params.role) ? params.role : 'Developer';
+          await api.post(`/projects/${p._id}/invite`, { email: target.email, role });
+          await refreshProjects();
+          return say(`Done. I added ${target.name} to ${p.name} as ${role}.`);
+        });
+      }
+
+      case 'change_role': {
+        if (!params.person) return ask('Whose role should I change?', 'person', 100);
+        if (!ROLES.includes(params.role)) return ask('Which role? For example Developer, Tester, Scrum Master or Product Owner.', 'role', 40);
+        return P(async (p) => {
+          const m = findMember(p, params.person);
+          if (!m) return no(`I couldn't find ${params.person} on ${p.name}.`);
+          return confirm(`Change ${m.name.split(' ')[0]} to ${params.role}?`, async () => {
+            await api.put(`/projects/${p._id}/members/${m._id}/role`, { role: params.role });
+            await refreshProjects();
+            return say(`Done. ${m.name.split(' ')[0]} is now ${params.role}.`);
+          });
+        });
+      }
+
+      case 'remove_member': {
+        if (!params.person) return ask('Who should I remove?', 'person', 100);
+        return P(async (p) => {
+          const m = findMember(p, params.person);
+          if (!m) return no(`I couldn't find ${params.person} on ${p.name}.`);
+          if (m._id === myId()) return no("I won't remove you from your own project.");
+          return confirm(`Remove ${m.name.split(' ')[0]} from ${p.name}?`, async () => {
+            await api.delete(`/projects/${p._id}/members/${m._id}`);
+            await refreshProjects();
+            return say(`Done. ${m.name.split(' ')[0]} has been removed.`);
+          });
+        });
+      }
+
+      /* ---------- stories ---------- */
       case 'create_story': {
-        if (!params.title) {
-          await askSlot('What should the story be called?', (answer) => execute({ ...plan, params: { ...params, title: answer.slice(0, 140) } }));
-          return;
-        }
-        const p = await resolveProject(params.project);
-        if (!p) { await askWhichProject(); return; }
-        try {
+        if (!params.title) return ask('What should the story be called?', 'title');
+        return P(async (p) => {
           const { data } = await api.post('/backlog', {
             project: p._id,
             title: params.title,
             description: params.description || '',
-            priority: ['Low', 'Medium', 'High', 'Critical'].includes(params.priority) ? params.priority : 'Medium',
+            priority: PRIORITIES.includes(params.priority) ? params.priority : 'Medium',
+            ...(params.points ? { storyPoints: params.points } : {}),
           });
-          if (data?.story) remember(data.story, p._id);
+          if (data?.story) {
+            remember(data.story, p._id);
+            if (DATE_RE.test(params.due || '')) {
+              await api.put(`/backlog/${data.story._id}`, { dueDate: params.due }, { params: { project: p._id } });
+            }
+          }
           toast.success(`Story added to ${p.name}`);
-          await speak(plan.speech || `Done. I added "${params.title}" to the ${p.name} backlog.`);
-        } catch (err) {
-          await speak(failSpeech(err, "I couldn't add that story."));
-        }
-        return;
+          return say(`Done. I added "${params.title}" to the ${p.name} backlog.`);
+        });
       }
 
-      case 'create_project': {
-        const name = (params.name || '').trim();
-        if (!name) {
-          await askSlot('Sure. What should the project be called?', (answer) => execute({ ...plan, params: { ...params, name: answer.slice(0, 80) } }));
-          return;
-        }
-        try {
-          await api.post('/projects', { name, description: params.description || '' });
-          projectsRef.current = null; // reload the project list next time
-          toast.success(`Project "${name}" created`);
-          await speak(`Done. I created the project ${name}. You'll find it in your Projects list.`);
-        } catch (err) {
-          await speak(failSpeech(err, "I couldn't create that project."));
-        }
-        return;
-      }
+      case 'update_story':
+        return ST(async (p, story) => {
+          const body = {};
+          if (params.title) body.title = params.title;
+          if (params.description) body.description = params.description;
+          if (PRIORITIES.includes(params.priority)) body.priority = params.priority;
+          if (typeof params.points === 'number') body.storyPoints = params.points;
+          if (DATE_RE.test(params.due || '')) body.dueDate = params.due;
+          if (!Object.keys(body).length) return no('What should I change on that story?');
+          await api.put(`/backlog/${story._id}`, body, { params: { project: pid(story, p) } });
+          remember(story, p._id);
+          return say(`Updated "${story.title}".`);
+        });
 
       case 'move_story': {
         const status = toStatus(params.status);
-        if (!status) { await speak('Which column should I move it to? For example, In Progress or Done.'); return; }
-        const p = await resolveProject(params.project);
-        if (!p && !(IT_RE.test(params.story || '') && lastStoryRef.current)) { await askWhichProject(); return; }
-        const story = await pickStory(params.story, p);
-        if (!story) return;
-        try {
-          await api.put(`/backlog/${story._id}`, { status }, { params: { project: story.project || p._id } });
-          remember(story, p?._id);
+        if (!status) return ask('Which column should I move it to? For example In Progress or Done.', 'status', 40);
+        return ST(async (p, story) => {
+          await api.put(`/backlog/${story._id}`, { status }, { params: { project: pid(story, p) } });
+          remember(story, p._id);
           toast.success(`Moved to ${status}`);
-          await speak(`Done. "${story.title}" is now ${status}.`);
-        } catch (err) {
-          await speak(failSpeech(err, "I couldn't move that story."));
-        }
-        return;
+          return say(`Done. "${story.title}" is now ${status}.`);
+        });
       }
 
       case 'assign_story': {
-        const p = await resolveProject(params.project);
-        if (!p && !(IT_RE.test(params.story || '') && lastStoryRef.current)) { await askWhichProject(); return; }
-        const project = p || (await getProjects()).find((x) => x._id === lastStoryRef.current?.project);
-        const person = norm(params.person || '');
-        if (!person) { await speak('Who should I assign it to?'); return; }
-        let target = null;
-        if (['me', 'myself', 'i'].includes(person)) {
-          target = { _id: user?.id || user?._id, name: 'you' };
-        } else {
-          const member = (project?.members || []).find((m) => {
-            const n = norm(m.user?.name || '');
-            return n && (n.includes(person) || person.includes(n.split(' ')[0]));
-          });
-          if (member) target = member.user;
-        }
-        if (!target) { await speak(`I couldn't find ${params.person} on that project.`); return; }
-        const story = await pickStory(params.story, project);
-        if (!story) return;
-        try {
-          await api.put(`/backlog/${story._id}`, { assignee: target._id }, { params: { project: story.project || project._id } });
-          remember(story, project?._id);
-          toast.success(`Assigned to ${target.name}`);
-          await speak(`Done. "${story.title}" is assigned to ${target.name === 'you' ? 'you' : target.name.split(' ')[0]}.`);
-        } catch (err) {
-          await speak(failSpeech(err, "I couldn't assign that story."));
-        }
-        return;
+        if (!params.person) return ask('Who should I assign it to?', 'person', 60);
+        return ST(async (p, story) => {
+          const owner = (await getProjects()).find((x) => x._id === pid(story, p)) || p;
+          const unassign = /^(nobody|no one|none|unassigned|noone)$/.test(norm(params.person));
+          const target = unassign ? null : findMember(owner, params.person);
+          if (!unassign && !target) return no(`I couldn't find ${params.person} on that project.`);
+          await api.put(`/backlog/${story._id}`, { assignee: target ? target._id : null }, { params: { project: pid(story, p) } });
+          remember(story, p._id);
+          return say(unassign ? `Done. "${story.title}" is unassigned.` : `Done. "${story.title}" is assigned to ${target._id === myId() ? 'you' : target.name.split(' ')[0]}.`);
+        });
       }
 
+      case 'delete_story':
+        return ST((p, story) => confirm(`Delete "${story.title}"? This can't be undone. Are you sure?`, async () => {
+          await api.delete(`/backlog/${story._id}`, { params: { project: pid(story, p) } });
+          if (lastStoryRef.current?._id === story._id) lastStoryRef.current = null;
+          return say('Done. The story is deleted.');
+        }));
+
+      case 'comment_story': {
+        if (!params.text) return ask('What should the comment say?', 'text', 500);
+        return ST(async (p, story) => {
+          await api.post(`/backlog/${story._id}/comments`, { text: params.text, project: pid(story, p) }, { params: { project: pid(story, p) } });
+          remember(story, p._id);
+          return say(`Comment added to "${story.title}".`);
+        });
+      }
+
+      case 'find_stories':
+        return P(async (p) => {
+          let list = await loadStories(p);
+          const words = norm(params.query).split(' ').filter((w) => w.length > 2 && !STOP_WORDS.includes(w));
+          if (words.length) list = list.filter((s) => words.some((w) => norm(s.title).includes(w)));
+          if (toStatus(params.status)) list = list.filter((s) => s.status === toStatus(params.status));
+          if (PRIORITIES.includes(params.priority)) list = list.filter((s) => s.priority === params.priority);
+          if (params.person) {
+            const m = findMember(p, params.person);
+            list = m ? list.filter((s) => (s.assignee?._id || s.assignee) === m._id) : [];
+          }
+          if (!list.length) return say('I found no matching stories.');
+          remember(list[0], p._id);
+          return say(`I found ${list.length}: ${list.slice(0, 3).map((s) => `${s.title.slice(0, 50)}, ${s.status}`).join('; ')}.`);
+        });
+
+      case 'story_details':
+        return ST(async (p, story) => {
+          const full = (await loadStories(p)).find((s) => s._id === story._id) || story;
+          remember(full, p._id);
+          const due = full.dueDate ? `, due ${new Date(full.dueDate).toLocaleDateString()}` : '';
+          return say(`${full.title}. It's ${full.status}, ${full.priority || 'Medium'} priority, ${full.storyPoints || 0} points, ${full.assignee?.name ? `assigned to ${full.assignee.name.split(' ')[0]}` : 'unassigned'}${due}.`);
+        });
+
+      case 'generate_stories': {
+        if (!params.topic) return ask('What should the stories be about?', 'topic', 300);
+        return P(async (p) => {
+          await speak('On it. Give me a moment.');
+          const count = Math.min(5, Math.max(1, params.count || 3));
+          const { data } = await api.post('/ai/generate-stories', { project: p.name, featureDescription: params.topic, count });
+          const stories = (data.stories || []).slice(0, count);
+          if (!stories.length) return no("I couldn't come up with stories for that. Try describing it differently.");
+          const created = await Promise.all(
+            stories.map((s) =>
+              api.post('/backlog', {
+                project: p._id,
+                title: s.title,
+                description: s.userStory || s.description || '',
+                acceptanceCriteria: s.acceptanceCriteria || [],
+                storyPoints: Number(s.storyPoints) || 0,
+                priority: PRIORITIES.includes(s.priority) ? s.priority : 'Medium',
+                labels: s.labels || [],
+                aiGenerated: true,
+              }).then((r) => r.data.story)
+            )
+          );
+          remember(created[0], p._id);
+          toast.success(`Added ${created.length} AI-generated stories`);
+          return say(`Done. I added ${created.length} ${created.length === 1 ? 'story' : 'stories'} to ${p.name}: ${created.map((s) => s.title.slice(0, 45)).join(', ')}.`);
+        });
+      }
+
+      case 'estimate_points':
+        return ST(async (p, story) => {
+          const { data } = await api.post('/ai/estimate-points', { storyText: `${story.title}. ${story.description || ''}` });
+          const pts = Number(data.points);
+          if (!pts) return no("I couldn't estimate that one.");
+          await api.put(`/backlog/${story._id}`, { storyPoints: pts }, { params: { project: pid(story, p) } });
+          remember(story, p._id);
+          return say(`I'd say ${pts} points${data.complexity ? `, ${String(data.complexity).toLowerCase()} complexity` : ''}. I saved it on the story.`);
+        });
+
+      /* ---------- sprints ---------- */
+      case 'create_sprint':
+        return P(async (p) => {
+          const { data } = await api.get('/sprints', { params: { project: p._id } });
+          const name = params.name || `Sprint ${(data.sprints || []).length + 1}`;
+          const days = params.days || 14;
+          await api.post('/sprints', {
+            project: p._id,
+            name,
+            goal: params.goal || '',
+            startDate: new Date().toISOString(),
+            endDate: new Date(Date.now() + days * 86400000).toISOString(),
+          });
+          return say(`Done. ${name} is planned for ${days} days in ${p.name}. Say start the sprint when you're ready.`);
+        });
+
+      case 'start_sprint':
+        return P(async (p) => {
+          const sprint = await pickSprint(params.sprint, p, 'Planned');
+          if (!sprint) return false;
+          if (sprint.status === 'Active') return say(`${sprint.name} is already active.`);
+          if (sprint.status === 'Completed') return no(`${sprint.name} is already completed.`);
+          const other = (sprintsRef.current || []).find((s) => s.status === 'Active');
+          if (other) return no(`${other.name} is still active. Complete it first.`);
+          await api.put(`/sprints/${sprint._id}`, { status: 'Active' }, { params: { project: p._id } });
+          return say(`Done. ${sprint.name} is now active. Its stories will show on the board.`);
+        });
+
+      case 'complete_sprint':
+        return P(async (p) => {
+          const sprint = await pickSprint(params.sprint, p, 'Active');
+          if (!sprint) return false;
+          if (sprint.status !== 'Active') return no(`${sprint.name} isn't active.`);
+          const open = (await loadStories(p)).filter((s) => (s.sprint?._id || s.sprint) === sprint._id && s.status !== 'Done').length;
+          return confirm(`${sprint.name} has ${open} unfinished ${open === 1 ? 'story' : 'stories'}. Complete it anyway?`, async () => {
+            await api.put(`/sprints/${sprint._id}`, { status: 'Completed' }, { params: { project: p._id } });
+            return say(`Done. ${sprint.name} is completed.`);
+          });
+        });
+
+      case 'add_to_sprint':
+        return ST(async (p, story) => {
+          const sprint = await pickSprint(params.sprint, p, 'Active');
+          if (!sprint) return false;
+          if (sprint.status === 'Completed') return no(`${sprint.name} is already completed.`);
+          await api.put(`/backlog/${story._id}/assign-sprint`, { sprintId: sprint._id }, { params: { project: pid(story, p) } });
+          remember(story, p._id);
+          return say(`Done. "${story.title}" is in ${sprint.name}.`);
+        });
+
+      case 'remove_from_sprint':
+        return ST(async (p, story) => {
+          await api.put(`/backlog/${story._id}/unassign-sprint`, {}, { params: { project: pid(story, p) } });
+          remember(story, p._id);
+          return say(`Done. "${story.title}" is back in the backlog.`);
+        });
+
+      case 'sprint_status':
+        return P(async (p) => {
+          const [{ data }, stories] = await Promise.all([api.get('/sprints', { params: { project: p._id } }), loadStories(p)]);
+          const sprint = (data.sprints || []).find((x) => x.status === 'Active');
+          if (!sprint) return say(`There's no active sprint in ${p.name} right now.`);
+          const inSprint = stories.filter((s) => (s.sprint?._id || s.sprint) === sprint._id);
+          const done = inSprint.filter((s) => s.status === 'Done');
+          const pts = (list) => list.reduce((sum, s) => sum + (s.storyPoints || 0), 0);
+          const daysLeft = Math.ceil((new Date(sprint.endDate) - Date.now()) / 86400000);
+          const left = daysLeft > 0 ? `${daysLeft} ${daysLeft === 1 ? 'day' : 'days'} left` : daysLeft === 0 ? 'it ends today' : `it ended ${Math.abs(daysLeft)} days ago`;
+          return say(`${sprint.name} has ${done.length} of ${inSprint.length} stories done${pts(inSprint) ? `, that's ${pts(done)} of ${pts(inSprint)} points` : ''}, and ${left}.`);
+        });
+
+      case 'list_sprints':
+        return P(async (p) => {
+          const { data } = await api.get('/sprints', { params: { project: p._id } });
+          const list = data.sprints || [];
+          if (!list.length) return say(`There are no sprints in ${p.name} yet.`);
+          return say(`${p.name} has ${list.length}: ${list.slice(0, 5).map((s) => `${s.name}, ${s.status}`).join('; ')}.`);
+        });
+
+      case 'sprint_review': {
+        if (!params.text) return ask('What should the sprint review say?', 'text', 500);
+        return P(async (p) => {
+          const sprint = await pickSprint(params.sprint, p, 'Active');
+          if (!sprint) return false;
+          await api.put(`/sprints/${sprint._id}/review`, { review: params.text }, { params: { project: p._id } });
+          return say(`Done. I saved the review for ${sprint.name}.`);
+        });
+      }
+
+      case 'retro_add': {
+        if (!params.text) return ask('What should I note down?', 'text', 300);
+        const kind = RETRO_LABELS[params.kind] ? params.kind : 'wentWell';
+        return P(async (p) => {
+          const sprint = await pickSprint(params.sprint, p, 'Active');
+          if (!sprint) return false;
+          const cur = sprint.retrospective || {};
+          const body = { wentWell: cur.wentWell || [], toImprove: cur.toImprove || [], actionItems: cur.actionItems || [] };
+          body[kind] = [...body[kind], params.text];
+          await api.put(`/sprints/${sprint._id}/retrospective`, body, { params: { project: p._id } });
+          return say(`Added to ${RETRO_LABELS[kind]} for ${sprint.name}.`);
+        });
+      }
+
+      /* ---------- my day ---------- */
       case 'my_work': {
-        const myId = user?.id || user?._id;
         const mine = (await loadAllStories())
-          .filter((s) => s.status !== 'Done' && (s.assignee?._id === myId || s.assignee === myId))
+          .filter((s) => s.status !== 'Done' && (s.assignee?._id === myId() || s.assignee === myId()))
           .sort((a, b) => (PRIORITY_RANK[b.priority] || 0) - (PRIORITY_RANK[a.priority] || 0));
-        if (!mine.length) {
-          await speak("You've got nothing assigned right now. Nice and clear.");
-        } else {
-          remember(mine[0]);
-          const top = mine.slice(0, 3).map((s) => s.title.slice(0, 60)).join(', ');
-          await speak(`You have ${mine.length} open ${mine.length === 1 ? 'story' : 'stories'}. The top ${Math.min(3, mine.length) === 1 ? 'one is' : 'ones are'}: ${top}.`);
-        }
-        return;
+        if (!mine.length) return say("You've got nothing assigned right now. Nice and clear.");
+        remember(mine[0]);
+        const top = mine.slice(0, 3).map((s) => s.title.slice(0, 60)).join(', ');
+        return say(`You have ${mine.length} open ${mine.length === 1 ? 'story' : 'stories'}. The top ${Math.min(3, mine.length) === 1 ? 'one is' : 'ones are'}: ${top}.`);
       }
 
       case 'overdue': {
-        const now = Date.now();
         const late = (await loadAllStories())
-          .filter((s) => s.status !== 'Done' && s.dueDate && new Date(s.dueDate).getTime() < now)
+          .filter((s) => s.status !== 'Done' && s.dueDate && new Date(s.dueDate).getTime() < Date.now())
           .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
-        if (!late.length) await speak('Nothing is overdue. Great job.');
-        else {
-          remember(late[0]);
-          await speak(`${late.length} ${late.length === 1 ? 'story is' : 'stories are'} overdue. The oldest ${Math.min(3, late.length) === 1 ? 'is' : 'are'}: ${late.slice(0, 3).map((s) => s.title.slice(0, 50)).join(', ')}.`);
-        }
-        return;
-      }
-
-      case 'sprint_status': {
-        const p = await resolveProject(params.project);
-        if (!p) { await askWhichProject(); return; }
-        const [{ data }, stories] = await Promise.all([api.get('/sprints', { params: { project: p._id } }), loadStories(p)]);
-        const sprint = (data.sprints || []).find((x) => x.status === 'Active');
-        if (!sprint) { await speak(`There's no active sprint in ${p.name} right now.`); return; }
-        const inSprint = stories.filter((s) => (s.sprint?._id || s.sprint) === sprint._id);
-        const done = inSprint.filter((s) => s.status === 'Done');
-        const pts = (list) => list.reduce((sum, s) => sum + (s.storyPoints || 0), 0);
-        const daysLeft = Math.ceil((new Date(sprint.endDate) - Date.now()) / 86400000);
-        const left = daysLeft > 0 ? `${daysLeft} ${daysLeft === 1 ? 'day' : 'days'} left` : daysLeft === 0 ? 'it ends today' : `it ended ${Math.abs(daysLeft)} days ago`;
-        await speak(`${sprint.name} has ${done.length} of ${inSprint.length} stories done${pts(inSprint) ? `, that's ${pts(done)} of ${pts(inSprint)} points` : ''}, and ${left}.`);
-        return;
+        if (!late.length) return say('Nothing is overdue. Great job.');
+        remember(late[0]);
+        return say(`${late.length} ${late.length === 1 ? 'story is' : 'stories are'} overdue. The oldest ${Math.min(3, late.length) === 1 ? 'is' : 'are'}: ${late.slice(0, 3).map((s) => s.title.slice(0, 50)).join(', ')}.`);
       }
 
       case 'briefing': {
-        const myId = user?.id || user?._id;
         const hour = new Date().getHours();
         const part = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening';
         const [all, notif] = await Promise.all([
           loadAllStories().catch(() => []),
           api.get('/notifications').then((r) => r.data.notifications || []).catch(() => []),
         ]);
-        const mine = all.filter((s) => s.status !== 'Done' && (s.assignee?._id === myId || s.assignee === myId));
+        const mine = all.filter((s) => s.status !== 'Done' && (s.assignee?._id === myId() || s.assignee === myId()));
         const high = mine.filter((s) => ['High', 'Critical'].includes(s.priority)).length;
         const late = all.filter((s) => s.status !== 'Done' && s.dueDate && new Date(s.dueDate).getTime() < Date.now()).length;
         const unread = notif.filter((n) => !n.read).length;
@@ -502,80 +855,166 @@ export default function SalinaAgent() {
           const h = await api.get(`/devops/${p._id}/health`).then((r) => r.data).catch(() => null);
           if (h?.configured) site = h.up ? ` ${p.name} is up and running.` : ` Heads up, ${p.name} looks down.`;
         }
-        await speak(
+        return say(
           `Good ${part}, ${firstName()}. You have ${mine.length} open ${mine.length === 1 ? 'story' : 'stories'}${high ? `, ${high} high priority` : ''}.` +
           `${late ? ` ${late} ${late === 1 ? 'is' : 'are'} overdue.` : ''}` +
           ` ${unread ? `And ${unread} unread ${unread === 1 ? 'notification' : 'notifications'}.` : 'Notifications are clear.'}${site}`
         );
-        return;
       }
 
       case 'notifications': {
         if (params.markRead) {
           await api.put('/notifications/read-all');
-          await speak('Done, I marked everything as read.');
-          return;
+          return say('Done, I marked everything as read.');
         }
         const { data } = await api.get('/notifications');
         const unread = (data.notifications || []).filter((n) => !n.read);
-        if (!unread.length) await speak("You're all caught up, no new notifications.");
-        else await speak(`You have ${unread.length} new ${unread.length === 1 ? 'notification' : 'notifications'}. ${unread.slice(0, 3).map((n) => n.message).join('. ')}.`);
-        return;
+        if (!unread.length) return say("You're all caught up, no new notifications.");
+        return say(`You have ${unread.length} new ${unread.length === 1 ? 'notification' : 'notifications'}. ${unread.slice(0, 3).map((n) => n.message).join('. ')}.`);
       }
 
-      case 'devops_status': {
-        const p = await resolveProject(params.project);
-        if (!p) { await askWhichProject(); return; }
-        const [h, s] = await Promise.all([
-          api.get(`/devops/${p._id}/health`).then((r) => r.data).catch(() => null),
-          api.get(`/devops/${p._id}/summary`).then((r) => r.data).catch(() => null),
-        ]);
-        const a = !h?.configured
-          ? `There's no live URL set up for ${p.name} yet.`
-          : h.up ? `${p.name} is up and answering in ${h.responseMs} milliseconds.` : `Heads up, ${p.name} looks down right now.`;
-        const b = s?.total
-          ? ` You've had ${s.total} deployments in the last 30 days${s.successRate != null ? ` with a ${s.successRate} percent success rate` : ''}.`
-          : ' No deployments are recorded yet.';
-        await speak(a + b);
-        return;
-      }
+      case 'analytics_summary':
+        return P(async (p) => {
+          const [c, pr] = await Promise.all([
+            api.get(`/analytics/${p._id}/task-completion`).then((r) => r.data).catch(() => null),
+            api.get(`/analytics/${p._id}/productivity`).then((r) => r.data.productivity || []).catch(() => []),
+          ]);
+          if (!c) return no("I couldn't load the analytics for that project.");
+          const top = [...pr].sort((a, b) => b.tasksCompleted - a.tasksCompleted)[0];
+          return say(`${p.name} has ${c.done} of ${c.total} stories done, that's ${c.completionRate} percent.${top && top.tasksCompleted ? ` Top contributor is ${String(top.member).split(' ')[0]} with ${top.tasksCompleted} finished.` : ''}`);
+        });
 
+      /* ---------- devops ---------- */
+      case 'devops_status':
+        return P(async (p) => {
+          const [h, s] = await Promise.all([
+            api.get(`/devops/${p._id}/health`).then((r) => r.data).catch(() => null),
+            api.get(`/devops/${p._id}/summary`).then((r) => r.data).catch(() => null),
+          ]);
+          const a = !h?.configured
+            ? `There's no live URL set up for ${p.name} yet.`
+            : h.up ? `${p.name} is up and answering in ${h.responseMs} milliseconds.` : `Heads up, ${p.name} looks down right now.`;
+          const b = s?.total
+            ? ` You've had ${s.total} deployments in the last 30 days${s.successRate != null ? ` with a ${s.successRate} percent success rate` : ''}.`
+            : ' No deployments are recorded yet.';
+          return say(a + b);
+        });
+
+      case 'pipeline_status':
+        return P(async (p) => {
+          const { data } = await api.get(`/devops/${p._id}/pipeline`);
+          if (!data.connected) return no('No GitHub repo is connected to that project yet.');
+          const runs = data.runs || [];
+          if (!runs.length) return say('There are no pipeline runs yet.');
+          const done = runs.filter((r) => r.status === 'completed');
+          const pass = done.filter((r) => r.conclusion === 'success').length;
+          const last = runs[0];
+          const state = last.status !== 'completed' ? 'is still running' : last.conclusion === 'success' ? 'passed' : 'failed';
+          return say(`The latest run, ${last.name}, ${state} on ${last.branch}.${done.length ? ` ${pass} of the last ${done.length} runs passed.` : ''}`);
+        });
+
+      case 'recent_commits':
+        return P(async (p) => {
+          const { data } = await api.get(`/devops/${p._id}/repo-activity`);
+          if (!data.connected || !data.commits?.length) return no('I have no commits to read for that project.');
+          return say(`The latest commits are: ${data.commits.slice(0, 3).map((c) => `${c.message.slice(0, 60)}, by ${c.author}`).join('; ')}.`);
+        });
+
+      case 'open_prs':
+        return P(async (p) => {
+          const { data } = await api.get(`/devops/${p._id}/repo-activity`);
+          if (!data.connected) return no('No GitHub repo is connected to that project yet.');
+          if (!data.pulls?.length) return say('There are no open pull requests.');
+          return say(`There ${data.pulls.length === 1 ? 'is 1 open pull request' : `are ${data.pulls.length} open pull requests`}: ${data.pulls.slice(0, 3).map((x) => x.title.slice(0, 60)).join('; ')}.`);
+        });
+
+      case 'record_deployment':
+        return P(async (p) => {
+          const environment = ENVIRONMENTS.includes(params.environment) ? params.environment : 'Production';
+          const status = ['success', 'failed', 'running', 'queued'].includes(params.result) ? params.result : 'success';
+          await api.post(`/devops/${p._id}/deployments`, { environment, status, branch: params.branch || 'main', logs: params.notes || '' });
+          return say(`Done. I recorded a ${status} ${environment} deployment for ${p.name}.`);
+        });
+
+      case 'deploy':
+        return P((p) => {
+          const environment = ENVIRONMENTS.includes(params.environment) ? params.environment : 'Production';
+          return confirm(`You want me to deploy ${environment} for ${p.name}. Are you sure?`, async () => {
+            const { data } = await api.post(`/devops/${p._id}/deploy`, { environment, branch: params.branch || 'main' });
+            return say(data.message === 'Deploy hook triggered' ? 'Deploy started. I will leave it in your deployment history.' : data.message || 'Deploy started.');
+          });
+        });
+
+      /* ---------- admin & me ---------- */
       case 'announce': {
-        if (user?.systemRole !== 'admin') { await speak('Only admins can post announcements.'); return; }
-        if (!params.title && !params.message) {
-          await askSlot('What should the announcement say?', (answer) => execute({ ...plan, params: { ...params, title: answer.slice(0, 60), message: answer } }));
-          return;
-        }
+        if (!isAdmin()) return no('Only admins can post announcements.');
+        if (!params.title && !params.message) return ask('What should the announcement say?', 'message', 500);
         const title = params.title || params.message.slice(0, 60);
         const message = params.message || params.title;
-        await askConfirm(`${plan.speech || `I'll announce "${title}" to everyone.`} Should I go ahead?`, async () => {
-          try {
-            await api.post('/admin/announcements', { title, message, severity: params.severity || 'info' });
-            await speak('Posted. Everyone will see it on their dashboard.');
-          } catch (err) {
-            await speak(failSpeech(err, "I couldn't post that announcement."));
-          }
+        return confirm(`I'll announce "${title}" to everyone. Should I go ahead?`, async () => {
+          await api.post('/admin/announcements', { title, message, severity: params.severity || 'info' });
+          return say('Posted. Everyone will see it on their dashboard.');
         });
-        return;
       }
 
-      case 'deploy': {
-        const p = await resolveProject(params.project);
-        if (!p) { await askWhichProject(); return; }
-        const environment = params.environment || 'Production';
-        await askConfirm(`You want me to deploy ${environment} for ${p.name}. Are you sure?`, async () => {
-          try {
-            const { data } = await api.post(`/devops/${p._id}/deploy`, { environment });
-            await speak(data.message === 'Deploy hook triggered' ? 'Deploy started. I will leave it in your deployment history.' : data.message || 'Deploy started.');
-          } catch (err) {
-            await speak(failSpeech(err, "I couldn't start that deploy."));
-          }
-        });
-        return;
+      case 'list_users': {
+        if (!isAdmin()) return no('Only admins can see the user list.');
+        const { data } = await api.get('/admin/users');
+        const users = data.users || [];
+        return say(`There are ${users.length} users: ${users.filter((u) => u.systemRole === 'admin').length} admins and ${users.filter((u) => u.status === 'suspended').length} suspended.`);
       }
 
-      default: // chat / unknown
+      case 'suspend_user':
+      case 'activate_user':
+      case 'set_system_role': {
+        if (!isAdmin()) return no('Only admins can manage users.');
+        if (!params.person) return ask('Which user do you mean? Say their name or email.', 'person', 100);
+        const { data } = await api.get('/admin/users');
+        const q = norm(params.person);
+        const matches = (data.users || []).filter((u) => norm(u.name).includes(q) || (u.email || '').toLowerCase().includes(q.replace(/\s+/g, '')));
+        if (!matches.length) return no(`I couldn't find a user called ${params.person}.`);
+        if (matches.length > 1) {
+          if (plan._asked) return no('There are several matches. Please use the Admin page for that one.');
+          return askSlot(`I found ${matches.slice(0, 3).map((u) => u.name).join(', ')}. Which one? Say the full name.`, (a) => execute({ ...plan, _asked: true, params: { ...params, person: a } }, rest), rest);
+        }
+        const u = matches[0];
+        const first = u.name.split(' ')[0];
+        if (plan.action === 'activate_user') {
+          await api.put(`/admin/users/${u._id}/status`, { status: 'active' });
+          return say(`Done. ${first} is active again.`);
+        }
+        if (u._id === myId()) return no("I won't change your own account.");
+        if (plan.action === 'suspend_user') {
+          return confirm(`Suspend ${first}? They won't be able to sign in. Are you sure?`, async () => {
+            await api.put(`/admin/users/${u._id}/status`, { status: 'suspended' });
+            return say(`Done. ${first} is suspended.`);
+          });
+        }
+        if (!['user', 'admin'].includes(params.level)) return ask('Should they be a normal user or an admin?', 'level', 20);
+        return confirm(`Make ${first} ${params.level === 'admin' ? 'an admin' : 'a normal user'}?`, async () => {
+          await api.put(`/admin/users/${u._id}/role`, { systemRole: params.level });
+          return say(`Done. ${first} is now ${params.level === 'admin' ? 'an admin' : 'a normal user'}.`);
+        });
+      }
+
+      case 'update_profile': {
+        if (!params.name && !params.jobTitle) return ask('What should I change on your profile? Say your new name or job title.', 'jobTitle', 80);
+        await api.put('/users/me', {
+          name: params.name || user?.name || '',
+          jobTitle: params.jobTitle || user?.jobTitle || '',
+          avatarUrl: user?.avatarUrl || '',
+        });
+        await refreshSession?.();
+        return say('Done. Your profile is updated.');
+      }
+
+      case 'chat':
         await speak(plan.speech || "Sorry, I didn't catch that.");
+        return true;
+
+      default: // unknown
+        await speak(plan.speech || "Sorry, I didn't catch that.");
+        return false;
     }
   };
 
@@ -593,25 +1032,50 @@ export default function SalinaAgent() {
     addLine('you', text);
     let dismissed = false;
     try {
-      let plan = parseLocal(text);
-      if (!plan) {
+      let steps = null;
+      const local = parseLocal(text);
+      if (local) {
+        steps = [local];
+      } else {
+        const askBrain = async () => {
+          const projects = await getProjects().catch(() => []);
+          const { data } = await api.post('/ai/salina', {
+            text,
+            path: pathRef.current,
+            lastStory: lastStoryRef.current?.title || '',
+            projects: projects.map((p) => p.name),
+          });
+          return data;
+        };
         try {
-          const { data } = await api.post('/ai/salina', { text, path: pathRef.current, lastStory: lastStoryRef.current?.title || '' });
-          plan = data;
+          let data;
+          try {
+            data = await askBrain();
+          } catch (e1) {
+            if (e1?.response?.status !== 502) throw e1;
+            await new Promise((r) => setTimeout(r, 900)); // one quiet retry for a temporary AI hiccup
+            data = await askBrain();
+          }
+          const list = data.steps?.length ? data.steps : [{ action: data.action, params: data.params }];
+          steps = list.map((s) => ({ ...s, speech: data.speech }));
         } catch (e) {
-          const msg = String(e?.response?.data?.error || '');
+          const kind = e?.response?.data?.kind;
           await speak(
             !e?.response
               ? "I can't reach the server right now. It may be waking up, so try again in a few seconds."
-              : msg.includes('GROQ_API_KEY')
+              : kind === 'no_key'
                 ? "My AI key isn't set on the server yet, so I can only do quick commands like opening pages."
-                : 'My AI side had a hiccup. Try again in a moment. Quick commands like opening pages still work.'
+                : kind === 'rate_limit'
+                  ? "I'm getting a lot of requests right now. Give me about a minute."
+                  : kind === 'bad_reply'
+                    ? 'I got a bit confused by that one. Could you say it a simpler way?'
+                    : 'My AI side had a hiccup. Try again in a moment. Quick commands like opening pages still work.'
           );
           return;
         }
       }
-      dismissed = plan.action === 'dismiss';
-      await execute(plan);
+      dismissed = steps[0]?.action === 'dismiss';
+      await runSteps(steps);
     } catch (err) {
       await speak(failSpeech(err, 'Something went wrong on my side. Try again?'));
     } finally {
@@ -849,7 +1313,7 @@ export default function SalinaAgent() {
             {log.length === 0 ? (
               <p className="text-ink-500">
                 {SR
-                  ? 'Turn voice on, then say "Salina". Try: "open DevOps", "give me my briefing", "move login bug to done", "how is the sprint going".'
+                  ? 'Turn voice on, then say "Salina". Try: "give me my briefing", "create a project called Shop and add 3 stories about checkout", "move login bug to done", "start the sprint", "invite Ravi as tester".'
                   : 'Voice needs Chrome or Edge. You can still type commands below.'}
               </p>
             ) : (
