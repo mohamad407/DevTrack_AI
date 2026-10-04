@@ -96,11 +96,21 @@ export async function salina(req, res) {
       firstName: String(req.user?.name || '').replace(/[0-9_]+/g, ' ').trim().split(/\s+/)[0] || 'there',
       path: String(req.body.path || '').slice(0, 200),
       lastStory: String(req.body.lastStory || '').slice(0, 140),
+      projects: Array.isArray(req.body.projects) ? req.body.projects.slice(0, 12).map((n) => String(n).slice(0, 60)) : [],
       today: new Date().toDateString(),
     }
     const result = await aiService.parseSalinaCommand(text, context)
     res.json(result)
   } catch (err) {
-    handleAiError(res, err)
+    console.error('Salina error:', err.message)
+    const m = String(err.message || '')
+    const kind = m.includes('GROQ_API_KEY')
+      ? 'no_key'
+      : /429|rate.?limit/i.test(m)
+        ? 'rate_limit'
+        : /parse|json/i.test(m)
+          ? 'bad_reply'
+          : 'ai_error'
+    res.status(kind === 'no_key' ? 500 : 502).json({ error: 'Salina could not complete this request', kind })
   }
 }
