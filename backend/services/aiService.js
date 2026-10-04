@@ -68,6 +68,7 @@ async function complete(userPrompt, options = {}) {
     max_tokens = 2048,
     top_p = 1,
     jsonMode = false,
+    forceJsonObject = false, // ask Groq itself to return valid JSON (used by Salina only)
   } = options;
 
   const client = getClient();
@@ -84,6 +85,7 @@ async function complete(userPrompt, options = {}) {
         max_tokens,
         top_p,
         stream: false,
+        ...(forceJsonObject ? { response_format: { type: "json_object" } } : {}),
       });
 
       const content = response?.choices?.[0]?.message?.content;
@@ -415,73 +417,135 @@ Include these sections in Markdown:
 }
 
 // ---------------------------------------------------------------------------
-// Salina - voice agent brain. Turns a spoken sentence into ONE structured action.
-// The frontend executes the action with the user's own login, so permissions
-// are still enforced by the normal API routes.
+// Salina - voice agent brain. Turns a spoken sentence into 1-4 structured actions.
+// The frontend runs the actions with the user's own login, so every permission is
+// still enforced by the normal API routes.
 // ---------------------------------------------------------------------------
-const SALINA_ACTIONS = ["navigate", "create_story", "my_work", "devops_status", "notifications", "announce", "deploy", "create_project", "move_story", "assign_story", "sprint_status", "overdue", "briefing", "chat", "unknown"];
-const SALINA_STATUSES = ["Backlog", "To Do", "In Progress", "Code Review", "Testing", "Done"];
-const SALINA_TARGETS = ["dashboard", "projects", "backlog", "sprints", "board", "analytics", "devops", "team", "ai", "profile", "admin"];
-const SALINA_PRIORITIES = ["Low", "Medium", "High", "Critical"];
-const SALINA_SEVERITIES = ["info", "warning", "critical"];
-const SALINA_ENVS = ["Development", "Testing", "Production"];
+const SALINA_SPEC = [
+  ["navigate", "target(dashboard|projects|backlog|sprints|board|analytics|devops|team|ai|profile|admin), project"],
+  ["create_project", "name, description"],
+  ["rename_project", "project, name"],
+  ["archive_project", "project"],
+  ["delete_project", "project"],
+  ["list_projects", ""],
+  ["set_repo", "project, repo(owner/repo)"],
+  ["set_live_url", "project, url"],
+  ["list_team", "project"],
+  ["invite_member", "project, person(name or email), role(Admin|Scrum Master|Developer|Tester|Product Owner)"],
+  ["change_role", "project, person, role"],
+  ["remove_member", "project, person"],
+  ["create_story", "project, title, description, priority(Low|Medium|High|Critical), points(number), due(YYYY-MM-DD)"],
+  ["update_story", "project, story, title, description, priority, points, due(YYYY-MM-DD)"],
+  ["move_story", "project, story, status(Backlog|To Do|In Progress|Code Review|Testing|Done)"],
+  ["assign_story", "project, story, person(first name, 'me', or 'nobody' to unassign)"],
+  ["delete_story", "project, story"],
+  ["comment_story", "project, story, text"],
+  ["find_stories", "project, query, status, priority, person"],
+  ["story_details", "project, story"],
+  ["generate_stories", "project, topic, count(1-5)  (AI writes and adds the stories)"],
+  ["estimate_points", "project, story  (AI estimates and saves the points)"],
+  ["create_sprint", "project, name, goal, days(number)"],
+  ["start_sprint", "project, sprint"],
+  ["complete_sprint", "project, sprint"],
+  ["add_to_sprint", "project, story, sprint('active' or a sprint name)"],
+  ["remove_from_sprint", "project, story"],
+  ["sprint_status", "project"],
+  ["list_sprints", "project"],
+  ["sprint_review", "project, sprint, text"],
+  ["retro_add", "project, sprint, kind(wentWell|toImprove|actionItems), text"],
+  ["my_work", ""],
+  ["overdue", ""],
+  ["briefing", ""],
+  ["notifications", "markRead(true|false)"],
+  ["analytics_summary", "project"],
+  ["devops_status", "project"],
+  ["pipeline_status", "project"],
+  ["recent_commits", "project"],
+  ["open_prs", "project"],
+  ["record_deployment", "project, environment(Development|Testing|Production), result(success|failed|running|queued), branch, notes"],
+  ["deploy", "project, environment, branch"],
+  ["announce", "title, message, severity(info|warning|critical)"],
+  ["list_users", ""],
+  ["suspend_user", "person"],
+  ["activate_user", "person"],
+  ["set_system_role", "person, level(user|admin)"],
+  ["update_profile", "name, jobTitle"],
+  ["chat", "(anything else, small talk, or a request you cannot do: put the short answer in speech)"],
+  ["unknown", "(unclear request: ask one short clarifying question in speech)"],
+];
+const SALINA_ACTIONS = SALINA_SPEC.map(([name]) => name);
+
+const SALINA_ENUMS = {
+  target: ["dashboard", "projects", "backlog", "sprints", "board", "analytics", "devops", "team", "ai", "profile", "admin"],
+  status: ["Backlog", "To Do", "In Progress", "Code Review", "Testing", "Done"],
+  priority: ["Low", "Medium", "High", "Critical"],
+  severity: ["info", "warning", "critical"],
+  environment: ["Development", "Testing", "Production"],
+  role: ["Admin", "Scrum Master", "Developer", "Tester", "Product Owner"],
+  kind: ["wentWell", "toImprove", "actionItems"],
+  result: ["success", "failed", "running", "queued"],
+  level: ["user", "admin"],
+};
+const SALINA_NUMBERS = { points: [0, 21], count: [1, 5], days: [1, 60] };
+const SALINA_LONG = new Set(["description", "message", "text", "topic", "notes"]);
+
+function cleanSalinaParams(raw) {
+  const out = {};
+  for (const [k, v] of Object.entries(raw && typeof raw === "object" ? raw : {})) {
+    if (SALINA_ENUMS[k]) {
+      out[k] = SALINA_ENUMS[k].includes(v) ? v : "";
+    } else if (SALINA_NUMBERS[k]) {
+      const n = Math.round(Number(v));
+      if (Number.isFinite(n)) out[k] = Math.min(SALINA_NUMBERS[k][1], Math.max(SALINA_NUMBERS[k][0], n));
+    } else if (typeof v === "string") {
+      out[k] = v.trim().slice(0, SALINA_LONG.has(k) ? 500 : 140);
+    } else if (typeof v === "boolean") {
+      out[k] = v;
+    }
+  }
+  return out;
+}
 
 export async function parseSalinaCommand(text, context = {}) {
-  const extraSystem = `You are Salina, the friendly voice assistant inside DevTrack AI. You sound like a warm, casual, helpful woman teammate.
+  const catalog = SALINA_SPEC.map(([name, params]) => `- ${name}: ${params}`).join("\n");
+  const extraSystem = `You are Salina, the friendly voice assistant inside DevTrack AI, a project-management app. You sound like a warm, casual, helpful woman teammate.
 Your replies are read aloud, so: plain spoken English, no markdown, no emojis, no lists, at most 2 short sentences. Never say your own name.
 
-HONESTY RULE: you can only do the actions listed below. Never say you did, are doing, or will do anything unless that exact action is chosen. If the user asks for something not listed (for example editing or deleting a project, inviting members, changing settings), use "chat" and say plainly that you can't do that yet, then name one thing you can do.
+Return ONLY JSON in this shape:
+{"speech":"...","steps":[{"action":"...","params":{...}}]}
 
-Turn the user's request into exactly ONE action. Return ONLY JSON like:
-{"action":"...","params":{...},"speech":"..."}
+RULES
+- "steps" holds 1 to 4 actions, in the order they should run. Use several steps only when the user clearly asked for several things (for example "create a project called Shop and add 3 stories about checkout"). Later steps automatically reuse the project from earlier steps, so leave their "project" empty.
+- Use only the params listed for an action. Leave a param as an empty string if you do not know it. Never invent names, emails, dates or ids.
+- "speech" is used only for chat and unknown. For every other action leave it empty, because the app speaks the result itself.
+- HONESTY: you can only do the actions listed below. Never say you did, are doing, or will do anything unless you chose that exact action. For anything not listed, use chat and say plainly that you cannot do that yet, then name one thing you can do.
+- If the user says it, that, or this one about a story, use "it" as the story. Last story discussed: ${context.lastStory || "none"}.
+- Dates: today is ${context.today || "unknown"}. Convert words like tomorrow or Friday into YYYY-MM-DD.
 
-Actions and params:
-- navigate: {"target":"dashboard|projects|backlog|sprints|board|analytics|devops|team|ai|profile|admin","project":"project name or empty"}
-- create_story: {"title":"short story title","description":"one or two sentences or empty","priority":"Low|Medium|High|Critical","project":"project name or empty"}
-- my_work: {}  (the user's own open stories)
-- devops_status: {"project":"project name or empty"}  (is the site up, deployment health)
-- notifications: {"markRead":true|false}
-- announce: {"title":"short title","message":"the announcement text","severity":"info|warning|critical"}  (posting an announcement to everyone)
-- deploy: {"environment":"Development|Testing|Production","project":"project name or empty"}
-- create_project: {"name":"project name or empty","description":"short description or empty"}
-- move_story: {"story":"words from the story title, or 'it' if they mean the last story","status":"Backlog|To Do|In Progress|Code Review|Testing|Done","project":"project name or empty"}
-- assign_story: {"story":"words from the story title, or 'it'","person":"first name of the teammate, or 'me'","project":"project name or empty"}
-- sprint_status: {"project":"project name or empty"}  (how the current sprint is going)
-- overdue: {}  (stories past their due date)
-- briefing: {}  (a short catch-up on their day: open work, overdue, notifications, site status)
-- chat: {}  (any other question or small talk - put the full short answer in "speech")
-- unknown: {}  (unclear request - ask one short clarifying question in "speech")
+ACTIONS
+${catalog}
 
-"speech" is what you say first, e.g. "Sure, adding that story now." For announce and deploy, describe exactly what you are about to do in one sentence.
-Last story discussed: ${context.lastStory || "none"}. If the user says it, that, or this one, use "it" as the story.
-User's first name: ${context.firstName || "there"}. Current page: ${context.path || "unknown"}. Today: ${context.today || ""}.`;
+The user's projects: ${(context.projects || []).join(", ") || "unknown"}. Use the exact project name from this list when they mention one.
+User's first name: ${context.firstName || "there"}. Current page: ${context.path || "unknown"}.`;
 
   const raw = await complete(`User said: "${String(text).slice(0, 300)}"`, {
     extraSystem,
     temperature: 0.2,
-    max_tokens: 400,
+    max_tokens: 700,
     jsonMode: true,
+    forceJsonObject: true,
   });
 
-  const out = raw && typeof raw === "object" ? raw : {};
-  const params = out.params && typeof out.params === "object" ? out.params : {};
-  let action = SALINA_ACTIONS.includes(out.action) ? out.action : "chat";
-  let speech = typeof out.speech === "string" ? out.speech.trim().slice(0, 300) : "";
+  const first = Array.isArray(raw) ? { steps: raw } : raw && typeof raw === "object" ? raw : {};
+  let list = Array.isArray(first.steps) ? first.steps : first.action ? [first] : [];
+  const steps = list
+    .filter((st) => st && SALINA_ACTIONS.includes(st.action))
+    .slice(0, 4)
+    .map((st) => ({ action: st.action, params: cleanSalinaParams(st.params) }));
 
-  // keep params inside known values
-  if (params.target && !SALINA_TARGETS.includes(params.target)) action = "unknown";
-  if (params.priority && !SALINA_PRIORITIES.includes(params.priority)) params.priority = "Medium";
-  if (params.status && !SALINA_STATUSES.includes(params.status)) params.status = "";
-  if (typeof params.name === "string") params.name = params.name.trim().slice(0, 80);
-  if (typeof params.story === "string") params.story = params.story.trim().slice(0, 140);
-  if (typeof params.person === "string") params.person = params.person.trim().slice(0, 60);
-  if (params.severity && !SALINA_SEVERITIES.includes(params.severity)) params.severity = "info";
-  if (params.environment && !SALINA_ENVS.includes(params.environment)) params.environment = "Production";
-  if (typeof params.title === "string") params.title = params.title.trim().slice(0, 140);
-  if (typeof params.message === "string") params.message = params.message.trim().slice(0, 500);
-  if (typeof params.description === "string") params.description = params.description.trim().slice(0, 500);
-  if (typeof params.project === "string") params.project = params.project.trim().slice(0, 80);
+  let speech = typeof first.speech === "string" ? first.speech.trim().slice(0, 300) : "";
+  if (!steps.length) steps.push({ action: "chat", params: {} });
+  if (!speech && ["chat", "unknown"].includes(steps[0].action)) speech = "Sorry, I didn't quite catch that. Could you say it again?";
 
-  if (!speech && (action === "chat" || action === "unknown")) speech = "Sorry, I didn't quite catch that. Could you say it again?";
-  return { action, params, speech };
+  return { steps, speech, action: steps[0].action, params: steps[0].params };
 }
