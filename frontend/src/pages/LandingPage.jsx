@@ -2,7 +2,8 @@ import Navbar from '../components/landing/Navbar.jsx';
 import Hero from '../components/landing/Hero.jsx';
 import Features from '../components/landing/Features.jsx';
 import DevOpsIllustration from '../components/landing/DevOpsIllustration.jsx';
-import Testimonials from '../components/landing/Testimonials.jsx';
+import Reviews from '../components/landing/Reviews.jsx';
+import FAQ from '../components/landing/FAQ.jsx';
 import CTASection from '../components/landing/CTASection.jsx';
 import Footer from '../components/landing/Footer.jsx';
 
@@ -14,7 +15,8 @@ export default function LandingPage() {
         <Hero />
         <Features />
         <DevOpsIllustration />
-        <Testimonials />
+        <Reviews />
+        <FAQ />
         <CTASection />
       </main>
       <Footer />
