@@ -1,49 +1,49 @@
 import jwt from 'jsonwebtoken';
+import User from './models/User.model.js';
+import Project from './models/Project.model.js';
+import { isObjectId } from './utility/security.js';
 
 /**
  * Realtime channels:
- *  - "project:<id>"  -> joined by everyone viewing that project's board
- *  - events: task:created, task:updated, task:moved, task:deleted,
- *            comment:added, sprint:updated, notification:new, presence:update
+ *  - "project:<id>"  -> only members of that project can join
+ *  - events are emitted by the REST routes (server side) after DB writes.
+ *    Clients can NOT broadcast arbitrary events any more (previously any
+ *    anonymous client could forge task:moved / comment:added for any project).
  */
 export const registerSocketHandlers = (io) => {
-  io.use((socket, next) => {
+  // Authenticate every connection (anonymous sockets are rejected).
+  io.use(async (socket, next) => {
     try {
       const token = socket.handshake.auth?.token;
-      if (token) {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        socket.user = decoded;
-      }
+      if (!token) return next(new Error('unauthorized'));
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const user = await User.findById(decoded.id).select('_id status isEmailVerified');
+      if (!user || user.status === 'suspended' || !user.isEmailVerified) return next(new Error('unauthorized'));
+      socket.user = { id: String(user._id) };
       next();
-    } catch (err) {
-      next(); // allow anonymous connect; protected emits still checked per-event if needed
+    } catch {
+      next(new Error('unauthorized'));
     }
   });
 
   io.on('connection', (socket) => {
-    socket.on('project:join', (projectId) => {
-      socket.join(`project:${projectId}`);
-      socket.to(`project:${projectId}`).emit('presence:update', {
-        userId: socket.user?.id,
-        status: 'online',
-      });
+    socket.on('project:join', async (projectId) => {
+      try {
+        if (!isObjectId(projectId)) return;
+        const project = await Project.findById(projectId).select('owner members.user');
+        if (!project) return;
+        const uid = socket.user.id;
+        const allowed = String(project.owner) === uid || project.members.some((m) => String(m.user) === uid);
+        if (!allowed) return; // silently ignore non-members
+        socket.join(`project:${projectId}`);
+        socket.to(`project:${projectId}`).emit('presence:update', { userId: uid, status: 'online' });
+      } catch {
+        /* ignore */
+      }
     });
 
     socket.on('project:leave', (projectId) => {
-      socket.leave(`project:${projectId}`);
-    });
-
-    socket.on('task:move', (payload) => {
-      // payload: { projectId, taskId, fromStatus, toStatus, order }
-      io.to(`project:${payload.projectId}`).emit('task:moved', payload);
-    });
-
-    socket.on('comment:new', (payload) => {
-      io.to(`project:${payload.projectId}`).emit('comment:added', payload);
-    });
-
-    socket.on('disconnect', () => {
-      // presence cleanup could be tracked via a Map of socket.id -> userId/project if needed
+      if (isObjectId(projectId)) socket.leave(`project:${projectId}`);
     });
   });
 };
