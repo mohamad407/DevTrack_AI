@@ -4,7 +4,12 @@ const CACHE = 'devtrack-shell-v1';
 const SHELL = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/favicon.svg'];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // Cache each shell file on its own: one missing file must not stop the worker from installing.
+  event.waitUntil(
+    caches.open(CACHE)
+      .then((c) => Promise.all(SHELL.map((url) => c.add(url).catch(() => {}))))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', (event) => {
