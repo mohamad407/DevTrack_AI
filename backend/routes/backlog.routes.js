@@ -2,6 +2,9 @@ import { Router } from 'express';
 import Story from '../models/Story.model.js';
 import Sprint from '../models/Sprint.model.js';
 import { protect, requireProjectRole } from '../middleware/auth.middleware.js';
+import { escapeRegex, isSafeHttpUrl, pick, str } from '../utility/security.js';
+
+const STORY_EDITABLE = ['title', 'description', 'acceptanceCriteria', 'storyPoints', 'priority', 'labels', 'status', 'assignee', 'sprint', 'order', 'dueDate'];
 
 const router = Router();
 router.use(protect);
@@ -36,10 +39,10 @@ router.get('/', requireProjectRole([]), async (req, res, next) => {
   try {
     const { sprint, status, priority, search } = req.query;
     const filter = { project: req.project._id };
-    if (sprint) filter.sprint = sprint === 'none' ? null : sprint;
-    if (status) filter.status = status;
-    if (priority) filter.priority = priority;
-    if (search) filter.title = new RegExp(search, 'i');
+    if (str(sprint)) filter.sprint = sprint === 'none' ? null : sprint;
+    if (str(status)) filter.status = status;
+    if (str(priority)) filter.priority = priority;
+    if (str(search)) filter.title = new RegExp(escapeRegex(search), 'i');
 
     const stories = await Story.find(filter)
       .populate('assignee', 'name avatarUrl')
@@ -72,14 +75,15 @@ router.put('/:id', requireProjectRole([]), async (req, res, next) => {
 
     // Guard: block edits that move a story into (or keep it in) a Completed sprint.
     if (req.body.sprint) {
-      const targetSprint = await Sprint.findById(req.body.sprint);
-      if (targetSprint?.status === 'Completed') {
+      const targetSprint = await Sprint.findOne({ _id: req.body.sprint, project: req.project._id });
+      if (!targetSprint) return res.status(404).json({ message: 'Sprint not found in this project' });
+      if (targetSprint.status === 'Completed') {
         return res.status(400).json({ message: 'Cannot add stories to a completed sprint' });
       }
     }
 
     const prevStatus = story.status;
-    Object.assign(story, req.body);
+    Object.assign(story, pick(req.body, STORY_EDITABLE)); // whitelist: no project/reporter/comments tampering
 
     if (req.body.status && req.body.status !== prevStatus) {
       story.activity.push({ actor: req.user._id, action: `moved from ${prevStatus} to ${req.body.status}` });
@@ -110,8 +114,9 @@ router.delete('/:id', requireProjectRole([]), async (req, res, next) => {
 router.put('/reorder/bulk', requireProjectRole([]), async (req, res, next) => {
   try {
     const { orderedIds } = req.body; // array of story ids in new order
+    if (!Array.isArray(orderedIds) || orderedIds.length > 500) return res.status(400).json({ message: 'orderedIds must be an array (max 500)' });
     const bulkOps = orderedIds.map((id, index) => ({
-      updateOne: { filter: { _id: id }, update: { order: index } },
+      updateOne: { filter: { _id: id, project: req.project._id }, update: { order: index } }, // scoped to this project
     }));
     await Story.bulkWrite(bulkOps);
     res.json({ message: 'Backlog reordered' });
@@ -171,7 +176,7 @@ router.put('/assign-sprint/bulk', requireProjectRole([]), async (req, res, next)
       }
     );
 
-    const stories = await Story.find({ _id: { $in: storyIds } }).populate('assignee', 'name avatarUrl');
+    const stories = await Story.find({ _id: { $in: storyIds }, project: req.project._id }).populate('assignee', 'name avatarUrl');
     stories.forEach((s) => req.app.get('io').to(`project:${req.project._id}`).emit('story:updated', s));
     res.json({ stories, message: `${storyIds.length} stories assigned to ${sprint.name}` });
   } catch (err) {
@@ -222,6 +227,8 @@ router.post('/:id/comments', requireProjectRole([]), async (req, res, next) => {
 router.post('/:id/attachments', requireProjectRole([]), async (req, res, next) => {
   try {
     const { fileName, url } = req.body;
+    // Block javascript:/data: links (stored XSS -> token theft when a teammate clicks)
+    if (!isSafeHttpUrl(url)) return res.status(400).json({ message: 'Attachment URL must start with http:// or https://' });
     const story = await Story.findOne({ _id: req.params.id, project: req.project._id });
     if (!story) return res.status(404).json({ message: 'Story not found' });
 
