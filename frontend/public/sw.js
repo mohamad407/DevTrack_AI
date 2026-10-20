@@ -1,6 +1,6 @@
 // DevTrack AI service worker: makes the site installable and lets the app shell open offline.
 // API calls and cross-origin requests (Firebase, fonts) are never cached.
-const CACHE = 'devtrack-shell-v1';
+const CACHE = 'devtrack-shell-v2';
 const SHELL = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/favicon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -20,20 +20,26 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// Store a copy of a successful response without touching the one returned to the browser.
+const save = (req, res) => {
+  if (res.ok) {
+    const copy = res.clone(); // clone synchronously, before the body is read
+    caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+  }
+  return res;
+};
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
   if (req.method !== 'GET' || url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/api')) return;
 
-  // Pages: network first so users always get the latest build, offline fallback to cached shell.
+  // Pages: network first so users always get the latest build; offline falls back to the cached shell.
   if (req.mode === 'navigate') {
     event.respondWith(
       fetch(req)
-        .then((res) => {
-          if (res.ok) caches.open(CACHE).then((c) => c.put('/', res.clone()));
-          return res;
-        })
+        .then((res) => save(new Request('/'), res))
         .catch(() => caches.match('/'))
     );
     return;
@@ -42,13 +48,7 @@ self.addEventListener('fetch', (event) => {
   // Hashed build assets and small static files: cache first.
   if (url.pathname.startsWith('/assets/') || SHELL.includes(url.pathname)) {
     event.respondWith(
-      caches.match(req).then((hit) =>
-        hit ||
-        fetch(req).then((res) => {
-          if (res.ok) caches.open(CACHE).then((c) => c.put(req, res.clone()));
-          return res;
-        })
-      )
+      caches.match(req).then((hit) => hit || fetch(req).then((res) => save(req, res)))
     );
   }
 });
