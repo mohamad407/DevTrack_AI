@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import User from '../models/User.model.js';
 import { protect } from '../middleware/auth.middleware.js';
+import { escapeRegex, str } from '../utility/security.js';
 
 const router = Router();
 
@@ -22,9 +23,13 @@ router.put('/me', async (req, res, next) => {
 
 router.get('/search', async (req, res, next) => {
   try {
-    const { q } = req.query;
+    const q = str(req.query.q);
+    // Require 3+ chars so this can't be used to dump the whole user/email list
+    if (!q || q.trim().length < 3) return res.json({ users: [] });
+    const rx = new RegExp(escapeRegex(q.trim()), 'i');
     const users = await User.find({
-      $or: [{ name: new RegExp(q, 'i') }, { email: new RegExp(q, 'i') }],
+      status: 'active',
+      $or: [{ name: rx }, { email: rx }],
     }).limit(10).select('name email avatarUrl jobTitle');
     res.json({ users });
   } catch (err) {
