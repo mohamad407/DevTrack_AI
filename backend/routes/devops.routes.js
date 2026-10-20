@@ -8,6 +8,9 @@ const router = Router();
 
 const ENVS = ['Development', 'Testing', 'Production'];
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+// Optional but recommended: GITHUB_ALLOWED_OWNERS=your-username,your-org
+// Without it, ANY user can connect ANY repo and read it using the server's GITHUB_TOKEN (incl. private repos).
+const ALLOWED_OWNERS = (process.env.GITHUB_ALLOWED_OWNERS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 const HOOK_HOSTS = ['api.render.com', 'api.vercel.com', 'api.netlify.com'];
 
 /* ------------------------------ helpers ------------------------------ */
@@ -151,6 +154,9 @@ router.put('/:projectId/repo', requireProjectRole(['Admin']), async (req, res, n
 
     if (repoInput && !REPO_RE.test(repoInput)) {
       return res.status(400).json({ message: 'Repository must look like owner/repo' });
+    }
+    if (repoInput && ALLOWED_OWNERS.length && !ALLOWED_OWNERS.includes(repoInput.split('/')[0].toLowerCase())) {
+      return res.status(403).json({ message: 'This GitHub owner is not allowed on this server' });
     }
     req.project.githubRepo = repoInput;
     await req.project.save();
