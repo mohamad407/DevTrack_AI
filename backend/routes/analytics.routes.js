@@ -28,7 +28,8 @@ router.get('/:projectId/velocity', requireProjectRole([]), async (req, res, next
 // Burndown for a specific sprint
 router.get('/:projectId/burndown/:sprintId', requireProjectRole([]), async (req, res, next) => {
   try {
-    const sprint = await Sprint.findById(req.params.sprintId);
+    const sprint = await Sprint.findOne({ _id: req.params.sprintId, project: req.project._id }); // project-scoped (IDOR fix)
+    if (!sprint) return res.status(404).json({ message: 'Sprint not found' });
     res.json({
       ideal: computeIdealBurndown(sprint),
       actual: sprint.burndownSnapshots.map((s) => ({ date: s.date, remainingPoints: s.remainingPoints })),
