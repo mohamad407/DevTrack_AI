@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import Task from '../models/Task.model.js';
 import { protect, requireProjectRole } from '../middleware/auth.middleware.js';
+import { isSafeHttpUrl, pick } from '../utility/security.js';
+
+const TASK_EDITABLE = ['title', 'description', 'status', 'priority', 'assignee', 'sprint', 'story', 'order', 'dueDate'];
 
 const router = Router();
 router.use(protect);
@@ -8,7 +11,7 @@ router.use(protect);
 router.post('/', requireProjectRole([]), async (req, res, next) => {
   try {
     const task = await Task.create({
-      ...req.body,
+      ...pick(req.body, TASK_EDITABLE),
       project: req.project._id,
       activity: [{ actor: req.user._id, action: 'created this task' }],
     });
@@ -38,7 +41,7 @@ router.put('/:id', requireProjectRole([]), async (req, res, next) => {
     if (!task) return res.status(404).json({ message: 'Task not found' });
 
     const prevStatus = task.status;
-    Object.assign(task, req.body);
+    Object.assign(task, pick(req.body, TASK_EDITABLE));
 
     if (req.body.status && req.body.status !== prevStatus) {
       task.activity.push({ actor: req.user._id, action: `moved from ${prevStatus} to ${req.body.status}` });
@@ -66,6 +69,7 @@ router.delete('/:id', requireProjectRole([]), async (req, res, next) => {
 router.post('/:id/comments', requireProjectRole([]), async (req, res, next) => {
   try {
     const task = await Task.findOne({ _id: req.params.id, project: req.project._id });
+    if (!task) return res.status(404).json({ message: 'Task not found' });
     task.comments.push({ author: req.user._id, text: req.body.text });
     task.activity.push({ actor: req.user._id, action: 'added a comment' });
     await task.save();
@@ -80,7 +84,9 @@ router.post('/:id/comments', requireProjectRole([]), async (req, res, next) => {
 router.post('/:id/attachments', requireProjectRole([]), async (req, res, next) => {
   try {
     const { fileName, url } = req.body;
+    if (!isSafeHttpUrl(url)) return res.status(400).json({ message: 'Attachment URL must start with http:// or https://' });
     const task = await Task.findOne({ _id: req.params.id, project: req.project._id });
+    if (!task) return res.status(404).json({ message: 'Task not found' });
     task.attachments.push({ fileName, url, uploadedBy: req.user._id });
     task.activity.push({ actor: req.user._id, action: `attached ${fileName}` });
     await task.save();
