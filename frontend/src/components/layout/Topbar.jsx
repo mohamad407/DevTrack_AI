@@ -1,3 +1,4 @@
+import InstallAppButton from '../common/InstallAppButton.jsx';
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Menu, Search, Bell, LogOut, User as UserIcon } from 'lucide-react';
