@@ -67,7 +67,7 @@ export default function TaskDetailModal({ task, projectId, onClose, onUpdated })
               <Paperclip size={12} /> Attachments
             </p>
             {task.attachments?.length ? task.attachments.map((a) => (
-              <a key={a._id} href={a.url} target="_blank" rel="noreferrer" className="block text-xs text-primary-light hover:underline">{a.fileName}</a>
+              <a key={a._id} href={/^https?:\/\//i.test(a.url) ? a.url : undefined} target="_blank" rel="noopener noreferrer" className="block text-xs text-primary-light hover:underline">{a.fileName}</a>
             )) : <p className="text-xs text-ink-500">No files attached.</p>}
           </div>
 
