@@ -3,6 +3,10 @@ import Project from '../models/Project.model.js';
 import User from '../models/User.model.js';
 import { Notification } from '../models/Misc.models.js';
 import { protect, requireProjectRole } from '../middleware/auth.middleware.js';
+import { pick } from '../utility/security.js';
+
+const ROLES = ['Admin', 'Scrum Master', 'Developer', 'Tester', 'Product Owner'];
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 
 const router = Router();
 router.use(protect);
@@ -11,6 +15,7 @@ router.use(protect);
 router.post('/', async (req, res, next) => {
   try {
     const { name, key, description } = req.body;
+    if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ message: 'Project name is required' });
     const project = await Project.create({
       name,
       key: key || name.slice(0, 3).toUpperCase(),
@@ -43,8 +48,12 @@ router.get('/:projectId', requireProjectRole([]), async (req, res) => {
 
 router.put('/:projectId', requireProjectRole(['Admin']), async (req, res, next) => {
   try {
-    const { name, description, githubRepo, status } = req.body;
-    Object.assign(req.project, { name, description, githubRepo, status });
+    const patch = pick(req.body, ['name', 'description', 'githubRepo', 'status']); // only fields actually sent (old code wiped the rest to undefined)
+    // githubRepo is interpolated into GitHub API URLs using the server token: must be strictly owner/repo
+    if (patch.githubRepo !== undefined && patch.githubRepo !== '' && !REPO_RE.test(String(patch.githubRepo))) {
+      return res.status(400).json({ message: 'Repository must look like owner/repo' });
+    }
+    Object.assign(req.project, patch);
     await req.project.save();
     res.json({ project: req.project });
   } catch (err) {
@@ -65,7 +74,11 @@ router.delete('/:projectId', requireProjectRole(['Admin']), async (req, res, nex
 router.post('/:projectId/invite', requireProjectRole(['Admin', 'Scrum Master']), async (req, res, next) => {
   try {
     const { email, role } = req.body;
-    const invitedUser = await User.findOne({ email: email.toLowerCase() });
+    if (typeof email !== 'string' || !email.trim()) return res.status(400).json({ message: 'email is required' });
+    if (role && !ROLES.includes(role)) return res.status(400).json({ message: 'Invalid role' });
+    // A Scrum Master must not be able to mint new project Admins (privilege escalation)
+    if (role === 'Admin' && req.projectRole !== 'Admin') return res.status(403).json({ message: 'Only a project Admin can grant the Admin role' });
+    const invitedUser = await User.findOne({ email: email.toLowerCase().trim() });
     if (!invitedUser) return res.status(404).json({ message: 'No user found with that email. They must sign up first.' });
 
     const alreadyMember = req.project.members.some((m) => m.user.toString() === invitedUser._id.toString());
@@ -91,6 +104,7 @@ router.post('/:projectId/invite', requireProjectRole(['Admin', 'Scrum Master']),
 router.put('/:projectId/members/:userId/role', requireProjectRole(['Admin']), async (req, res, next) => {
   try {
     const { role } = req.body;
+    if (!ROLES.includes(role)) return res.status(400).json({ message: 'Invalid role' });
     const member = req.project.members.find((m) => m.user.toString() === req.params.userId);
     if (!member) return res.status(404).json({ message: 'Member not found' });
     member.role = role;
