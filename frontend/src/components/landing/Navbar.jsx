@@ -2,11 +2,13 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { GitBranch, Menu, X } from 'lucide-react';
+import InstallAppButton from '../common/InstallAppButton.jsx';
 
 const links = [
   { label: 'Features', href: '#features' },
   { label: 'Pipeline', href: '#pipeline' },
-  { label: 'Testimonials', href: '#testimonials' },
+  { label: 'Reviews', href: '#reviews' },
+  { label: 'FAQ', href: '#faq' },
 ];
 
 export default function Navbar() {
@@ -30,9 +32,7 @@ export default function Navbar() {
     >
       <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
         <Link to="/" className="flex items-center gap-2">
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-aurora shadow-glow">
-            <GitBranch size={18} className="text-white" />
-          </span>
+          <img src="/icon-192.png" alt="" width={36} height={36} className="h-9 w-9 rounded-lg shadow-glow" />
           <span className="font-display text-lg font-semibold tracking-tight">
             DevTrack <span className="text-gradient">AI</span>
           </span>
@@ -47,6 +47,7 @@ export default function Navbar() {
         </div>
 
         <div className="hidden items-center gap-3 md:flex">
+          <InstallAppButton compact />
           <Link to="/login" className="text-sm font-medium text-ink-300 transition-colors hover:text-white">
             Log in
           </Link>
@@ -75,6 +76,7 @@ export default function Navbar() {
             <Link to="/login" className="btn-ghost flex-1 text-sm">Log in</Link>
             <Link to="/signup" className="btn-primary flex-1 text-sm">Start free</Link>
           </div>
+          <InstallAppButton />
         </motion.div>
       )}
     </motion.header>
