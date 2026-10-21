@@ -1,7 +1,7 @@
 import { NavLink, useParams } from 'react-router-dom';
 import {
   LayoutDashboard, FolderKanban, ListTodo, KanbanSquare, CalendarRange,
-  LineChart, GitBranch, Users, Bot, ShieldCheck, GitBranchPlus,
+  LineChart, GitBranch, Users, Bot, ShieldCheck, GitBranchPlus, Settings,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 
@@ -9,6 +9,7 @@ const baseLinks = [
   { to: '/dashboard', label: 'Overview', icon: LayoutDashboard, end: true },
   { to: '/dashboard/projects', label: 'Projects', icon: FolderKanban, end: true },
   { to: '/dashboard/ai-assistant', label: 'AI Assistant', icon: Bot, end: true },
+  { to: '/dashboard/settings', label: 'Settings', icon: Settings, end: true },
 ];
 
 const projectLinks = (id) => [
