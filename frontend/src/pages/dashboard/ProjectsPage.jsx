@@ -5,24 +5,37 @@ import toast from 'react-hot-toast';
 import api from '../../services/api.js';
 import { SkeletonCard } from '../../components/common/Skeleton.jsx';
 
+const TEMPLATE_OPTIONS = [
+  { id: 'blank', label: 'Blank', desc: 'Start with an empty board' },
+  { id: 'scrum', label: 'Scrum', desc: 'Sprints, story points, and a review flow' },
+  { id: 'kanban', label: 'Kanban', desc: 'Continuous flow with a few columns' },
+  { id: 'bug', label: 'Bug tracking', desc: 'Triage bugs with sample reports' },
+];
+
+const EMPTY_FORM = { name: '', key: '', description: '', template: 'blank' };
+
 export default function ProjectsPage() {
   const [projects, setProjects] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', key: '', description: '' });
+  const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
   const load = () => api.get('/projects').then(({ data }) => setProjects(data.projects)).catch(() => setProjects([]));
 
   useEffect(() => { load(); }, []);
 
+  const closeModal = () => {
+    setModalOpen(false);
+    setForm(EMPTY_FORM);
+  };
+
   const createProject = async (e) => {
     e.preventDefault();
     setSaving(true);
     try {
       await api.post('/projects', form);
-      toast.success('Project created');
-      setModalOpen(false);
-      setForm({ name: '', key: '', description: '' });
+      toast.success(form.template === 'blank' ? 'Project created' : 'Project created with starter stories');
+      closeModal();
       load();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Could not create project');
@@ -89,12 +102,37 @@ export default function ProjectsPage() {
 
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="glass-panel w-full max-w-md p-6">
+          <div className="glass-panel w-full max-w-lg p-6">
             <div className="mb-5 flex items-center justify-between">
               <h2 className="font-display text-lg font-semibold">New project</h2>
-              <button onClick={() => setModalOpen(false)}><X size={18} /></button>
+              <button onClick={closeModal} aria-label="Close"><X size={18} /></button>
             </div>
-            <form onSubmit={createProject} className="space-y-4">
+            <form onSubmit={createProject} className="space-y-5">
+              <div>
+                <p className="mb-2 text-sm font-medium text-ink-300">Start from</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {TEMPLATE_OPTIONS.map((t) => {
+                    const selected = form.template === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        aria-pressed={selected}
+                        onClick={() => setForm({ ...form, template: t.id })}
+                        className={`rounded-xl border p-3 text-left transition-colors ${
+                          selected
+                            ? 'border-primary-light/60 bg-primary/10'
+                            : 'border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05]'
+                        }`}
+                      >
+                        <span className="block text-sm font-medium">{t.label}</span>
+                        <span className="mt-1 block text-xs text-ink-500">{t.desc}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               <input
                 required
                 placeholder="Project name"
@@ -103,7 +141,7 @@ export default function ProjectsPage() {
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
               />
               <input
-                placeholder="Key (e.g. DTA) — auto-generated if left blank"
+                placeholder="Key (e.g. DTA), auto-generated if left blank"
                 className="input-glass"
                 value={form.key}
                 onChange={(e) => setForm({ ...form, key: e.target.value.toUpperCase() })}
