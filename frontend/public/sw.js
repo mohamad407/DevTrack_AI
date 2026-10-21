@@ -1,4 +1,4 @@
-// DevTrack AI service worker: makes the site installable and lets the app shell open offline.
+// DevTrack AI service worker: installable app, offline shell, and push notifications.
 // API calls and cross-origin requests (Firebase, fonts) are never cached.
 const CACHE = 'devtrack-shell-v2';
 const SHELL = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/favicon.svg'];
@@ -51,4 +51,39 @@ self.addEventListener('fetch', (event) => {
       caches.match(req).then((hit) => hit || fetch(req).then((res) => save(req, res)))
     );
   }
+});
+
+// Show a notification when the server pushes one (app closed or in background).
+self.addEventListener('push', (event) => {
+  let data = { title: 'DevTrack AI', body: 'You have a new update', link: '/dashboard' };
+  try {
+    data = { ...data, ...event.data.json() };
+  } catch {
+    /* empty or non-JSON payload: keep the defaults */
+  }
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+      data: { link: data.link },
+    })
+  );
+});
+
+// Tapping a notification opens the related page in the app.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const link = (event.notification.data && event.notification.data.link) || '/dashboard';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      for (const client of list) {
+        if ('focus' in client) {
+          client.navigate(link).catch(() => {});
+          return client.focus();
+        }
+      }
+      return self.clients.openWindow(link);
+    })
+  );
 });
