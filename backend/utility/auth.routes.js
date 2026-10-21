@@ -1,10 +1,22 @@
 import { Router } from 'express';
+import jwt from 'jsonwebtoken';
 import User from '../models/User.model.js';
 import { verifyFirebaseToken } from '../config/firebase.js';
 import { signAccessToken, signRefreshToken } from '../utility/token.js';
 import { protect } from '../middleware/auth.middleware.js';
 
 const router = Router();
+
+const IS_PROD = process.env.NODE_ENV === 'production';
+const REFRESH_COOKIE = 'refreshToken';
+// Frontend (Vercel) and backend (Render) are different sites, so production needs SameSite=None + Secure.
+const refreshCookieOptions = {
+  httpOnly: true, // JavaScript on the page can never read it
+  secure: IS_PROD,
+  sameSite: IS_PROD ? 'none' : 'lax',
+  path: '/api/auth',
+  maxAge: 30 * 24 * 60 * 60 * 1000,
+};
 
 /**
  * POST /api/auth/firebase-session
@@ -65,9 +77,11 @@ router.post('/firebase-session', async (req, res, next) => {
     const accessToken = signAccessToken(user);
     const refreshToken = signRefreshToken(user);
 
+    // The refresh token goes into an httpOnly cookie only. It is never in the response body.
+    res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions);
+
     res.json({
       accessToken,
-      refreshToken,
       user: {
         id: user._id,
         name: user.name,
@@ -82,18 +96,29 @@ router.post('/firebase-session', async (req, res, next) => {
   }
 });
 
-/** POST /api/auth/refresh - exchange a refresh token for a new access token */
-router.post('/refresh', async (req, res, next) => {
+/** POST /api/auth/refresh - reads the httpOnly refresh cookie and issues a new access token */
+router.post('/refresh', async (req, res) => {
   try {
-    const jwt = (await import('jsonwebtoken')).default;
-    const { refreshToken } = req.body;
+    const refreshToken = req.cookies?.[REFRESH_COOKIE];
+    if (!refreshToken) return res.status(401).json({ message: 'No refresh token' });
+
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    const user = await User.findById(decoded.id);
-    if (!user) return res.status(401).json({ message: 'Invalid refresh token' });
+    const user = await User.findById(decoded.id).select('_id status');
+    if (!user || user.status === 'suspended') {
+      res.clearCookie(REFRESH_COOKIE, refreshCookieOptions);
+      return res.status(401).json({ message: 'Invalid refresh token' });
+    }
+
     res.json({ accessToken: signAccessToken(user) });
-  } catch (err) {
+  } catch {
     res.status(401).json({ message: 'Invalid or expired refresh token' });
   }
+});
+
+/** POST /api/auth/logout - clears the refresh cookie. No login needed, so it works even with an expired session. */
+router.post('/logout', (req, res) => {
+  res.clearCookie(REFRESH_COOKIE, refreshCookieOptions);
+  res.json({ message: 'Logged out' });
 });
 
 /**
