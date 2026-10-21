@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { sendPushToUser } from '../utility/push.js';
 
 // ---- DevOps: Deployment / Build history ----
 const deploymentSchema = new mongoose.Schema(
@@ -49,6 +50,16 @@ const notificationSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Every saved notification is also pushed to the recipient's installed devices.
+// Push failures never block or undo the saved notification.
+notificationSchema.post('save', (doc) => {
+  sendPushToUser(doc.recipient, {
+    title: 'DevTrack AI',
+    body: doc.message,
+    link: doc.link || '/dashboard',
+  }).catch(() => {});
+});
 
 export const Deployment = mongoose.model('Deployment', deploymentSchema);
 export const Announcement = mongoose.model('Announcement', announcementSchema);
