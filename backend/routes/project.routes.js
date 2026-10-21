@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import Project from '../models/Project.model.js';
 import User from '../models/User.model.js';
+import Story from '../models/Story.model.js';
 import { Notification } from '../models/Misc.models.js';
 import { protect, requireProjectRole } from '../middleware/auth.middleware.js';
 import { pick } from '../utility/security.js';
@@ -8,21 +9,71 @@ import { pick } from '../utility/security.js';
 const ROLES = ['Admin', 'Scrum Master', 'Developer', 'Tester', 'Product Owner'];
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 
+// Starter setups for new projects. Statuses must be values the Story model allows.
+const TEMPLATES = {
+  scrum: {
+    kanbanColumns: ['Backlog', 'To Do', 'In Progress', 'Code Review', 'Testing', 'Done'],
+    stories: [
+      { title: 'Set up the repository and CI pipeline', status: 'To Do', priority: 'High', storyPoints: 3, labels: ['setup'], acceptanceCriteria: ['Repository is shared with the team', 'Pipeline runs on every push'] },
+      { title: 'Design the first user flow', status: 'Backlog', priority: 'Medium', storyPoints: 5, labels: ['design'], acceptanceCriteria: ['Flow is reviewed by the Product Owner'] },
+      { title: 'Agree on the Definition of Done', status: 'Backlog', priority: 'Medium', storyPoints: 1, labels: ['process'], acceptanceCriteria: ['Team agrees on the checklist'] },
+    ],
+  },
+  kanban: {
+    kanbanColumns: ['Backlog', 'To Do', 'In Progress', 'Testing', 'Done'],
+    stories: [
+      { title: 'Map the current workflow', status: 'To Do', priority: 'High', labels: ['process'] },
+      { title: 'Set a work-in-progress limit per column', status: 'Backlog', priority: 'Medium', labels: ['process'] },
+      { title: 'Review blocked items every morning', status: 'Backlog', priority: 'Low', labels: ['routine'] },
+    ],
+  },
+  bug: {
+    kanbanColumns: ['Backlog', 'To Do', 'In Progress', 'Testing', 'Done'],
+    stories: [
+      { title: 'Login fails after password reset', status: 'To Do', priority: 'Critical', labels: ['bug'], acceptanceCriteria: ['Steps to reproduce are recorded', 'Fix is verified on staging'] },
+      { title: 'Dashboard loads slowly on mobile', status: 'Backlog', priority: 'High', labels: ['bug', 'performance'] },
+      { title: 'Typo on the signup page', status: 'Backlog', priority: 'Low', labels: ['bug', 'ui'] },
+    ],
+  },
+};
+
 const router = Router();
 router.use(protect);
 
-// Create project
+// Create project (optionally from a template)
 router.post('/', async (req, res, next) => {
   try {
     const { name, key, description } = req.body;
+    const template = req.body.template || 'blank';
     if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ message: 'Project name is required' });
+    if (template !== 'blank' && (typeof template !== 'string' || !TEMPLATES[template])) {
+      return res.status(400).json({ message: 'Unknown project template' });
+    }
+
+    const starter = template === 'blank' ? null : TEMPLATES[template];
     const project = await Project.create({
       name,
       key: key || name.slice(0, 3).toUpperCase(),
       description,
       owner: req.user._id,
       members: [{ user: req.user._id, role: 'Admin' }],
+      ...(starter ? { kanbanColumns: starter.kanbanColumns } : {}),
     });
+
+    if (starter) {
+      await Story.insertMany(
+        starter.stories.map((s, i) => ({
+          ...s,
+          project: project._id,
+          reporter: req.user._id,
+          order: i,
+          storyPoints: s.storyPoints ?? 0,
+          acceptanceCriteria: s.acceptanceCriteria ?? [],
+          labels: s.labels ?? [],
+        }))
+      );
+    }
+
     res.status(201).json({ project });
   } catch (err) {
     next(err);
