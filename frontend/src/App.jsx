@@ -7,8 +7,8 @@ import SignupPage from './pages/SignupPage.jsx';
 import ForgotPasswordPage from './pages/ForgotPasswordPage.jsx';
 import VerifyEmailPage from './pages/VerifyEmailPage.jsx';
 import PrivacyPage from './pages/PrivacyPage.jsx';
-import TermsPage from './pages/TermsPage.jsx';
 import NotFoundPage from './pages/NotFoundPage.jsx';
+import TermsPage from './pages/TermsPage.jsx';
 
 import DashboardLayout from './components/layout/DashboardLayout.jsx';
 import DashboardHome from './pages/dashboard/DashboardHome.jsx';
@@ -22,6 +22,7 @@ import TeamPage from './pages/dashboard/TeamPage.jsx';
 import AIAssistantPage from './pages/dashboard/AIAssistantPage.jsx';
 import ProfilePage from './pages/dashboard/ProfilePage.jsx';
 import AdminPage from './pages/dashboard/AdminPage.jsx';
+import SettingsPage from './pages/dashboard/SettingsPage.jsx';
 
 import LoadingScreen from './components/common/LoadingScreen.jsx';
 import OfflineBanner from './components/common/OfflineBanner.jsx';
@@ -64,6 +65,7 @@ export default function App() {
           <Route path="projects/:projectId/team" element={<TeamPage />} />
           <Route path="ai-assistant" element={<AIAssistantPage />} />
           <Route path="profile" element={<ProfilePage />} />
+          <Route path="settings" element={<SettingsPage />} />
           <Route path="admin" element={<AdminPage />} />
         </Route>
 
