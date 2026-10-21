@@ -12,6 +12,7 @@ import { sanitizeMongo } from './utility/security.js';
 
 import connectDB from './config/db.js';
 import { registerSocketHandlers } from './socket.js';
+import { startSprintReminders } from './utility/sprintReminders.js';
 
 import authRoutes from './utility/auth.routes.js';
 import userRoutes from './routes/user.routes.js';
@@ -26,6 +27,7 @@ import adminRoutes from './routes/admin.routes.js';
 import notificationRoutes from './routes/notification.routes.js';
 import announcementRoutes from './routes/announcement.routes.js';
 import reviewRoutes from './routes/review.routes.js';
+import pushRoutes from './routes/push.routes.js';
 
 import { errorHandler, notFound } from './middleware/error.middleware.js';
 
@@ -135,6 +137,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/reviews', reviewRoutes);
+app.use('/api/push', pushRoutes);
 
 // ----------------------------
 // Error Handling
@@ -159,6 +162,8 @@ connectDB()
         `🚀 DevTrack AI API running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`
       );
     });
+    // Sprint deadline reminders run every 6 hours
+    startSprintReminders();
   })
   .catch((err) => {
     console.error('Failed to connect to MongoDB:', err.message);
