@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import Story from '../models/Story.model.js';
 import Sprint from '../models/Sprint.model.js';
+import { Notification } from '../models/Misc.models.js';
 import { protect, requireProjectRole } from '../middleware/auth.middleware.js';
 import { escapeRegex, isSafeHttpUrl, pick, str } from '../utility/security.js';
 
@@ -82,6 +83,7 @@ router.put('/:id', requireProjectRole([]), async (req, res, next) => {
       }
     }
 
+    const prevAssignee = story.assignee ? String(story.assignee) : '';
     const prevStatus = story.status;
     Object.assign(story, pick(req.body, STORY_EDITABLE)); // whitelist: no project/reporter/comments tampering
 
@@ -92,6 +94,18 @@ router.put('/:id', requireProjectRole([]), async (req, res, next) => {
       story.activity.push({ actor: req.user._id, action: 'assignee updated' });
     }
     await story.save();
+
+    // Notify a newly assigned member (not yourself)
+    const newAssignee = story.assignee ? String(story.assignee) : '';
+    const isMember = req.project.members.some((m) => String(m.user) === newAssignee);
+    if (newAssignee && newAssignee !== prevAssignee && newAssignee !== String(req.user._id) && isMember) {
+      Notification.create({
+        recipient: newAssignee,
+        type: 'assignment',
+        message: `You were assigned "${story.title}" in ${req.project.name}`,
+        link: `/dashboard/projects/${req.project._id}/board`,
+      }).catch(() => {});
+    }
 
     req.app.get('io').to(`project:${req.project._id}`).emit('story:updated', story);
     res.json({ story });
