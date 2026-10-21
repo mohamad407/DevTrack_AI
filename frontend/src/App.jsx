@@ -6,6 +6,8 @@ import LoginPage from './pages/LoginPage.jsx';
 import SignupPage from './pages/SignupPage.jsx';
 import ForgotPasswordPage from './pages/ForgotPasswordPage.jsx';
 import VerifyEmailPage from './pages/VerifyEmailPage.jsx';
+import PrivacyPage from './pages/PrivacyPage.jsx';
+import TermsPage from './pages/TermsPage.jsx';
 
 import DashboardLayout from './components/layout/DashboardLayout.jsx';
 import DashboardHome from './pages/dashboard/DashboardHome.jsx';
@@ -21,6 +23,7 @@ import ProfilePage from './pages/dashboard/ProfilePage.jsx';
 import AdminPage from './pages/dashboard/AdminPage.jsx';
 
 import LoadingScreen from './components/common/LoadingScreen.jsx';
+import OfflineBanner from './components/common/OfflineBanner.jsx';
 
 const ProtectedRoute = ({ children }) => {
   const { user, loading } = useAuth();
@@ -31,35 +34,40 @@ const ProtectedRoute = ({ children }) => {
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/" element={<LandingPage />} />
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/signup" element={<SignupPage />} />
-      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-      <Route path="/verify-email" element={<VerifyEmailPage />} />
+    <>
+      <OfflineBanner />
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="/verify-email" element={<VerifyEmailPage />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/terms" element={<TermsPage />} />
 
-      <Route
-        path="/dashboard"
-        element={
-          <ProtectedRoute>
-            <DashboardLayout />
-          </ProtectedRoute>
-        }
-      >
-        <Route index element={<DashboardHome />} />
-        <Route path="projects" element={<ProjectsPage />} />
-        <Route path="projects/:projectId/backlog" element={<BacklogPage />} />
-        <Route path="projects/:projectId/sprints" element={<SprintsPage />} />
-        <Route path="projects/:projectId/board" element={<KanbanPage />} />
-        <Route path="projects/:projectId/analytics" element={<AnalyticsPage />} />
-        <Route path="projects/:projectId/devops" element={<DevOpsPage />} />
-        <Route path="projects/:projectId/team" element={<TeamPage />} />
-        <Route path="ai-assistant" element={<AIAssistantPage />} />
-        <Route path="profile" element={<ProfilePage />} />
-        <Route path="admin" element={<AdminPage />} />
-      </Route>
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout />
+            </ProtectedRoute>
+          }
+        >
+          <Route index element={<DashboardHome />} />
+          <Route path="projects" element={<ProjectsPage />} />
+          <Route path="projects/:projectId/backlog" element={<BacklogPage />} />
+          <Route path="projects/:projectId/sprints" element={<SprintsPage />} />
+          <Route path="projects/:projectId/board" element={<KanbanPage />} />
+          <Route path="projects/:projectId/analytics" element={<AnalyticsPage />} />
+          <Route path="projects/:projectId/devops" element={<DevOpsPage />} />
+          <Route path="projects/:projectId/team" element={<TeamPage />} />
+          <Route path="ai-assistant" element={<AIAssistantPage />} />
+          <Route path="profile" element={<ProfilePage />} />
+          <Route path="admin" element={<AdminPage />} />
+        </Route>
 
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </>
   );
 }
