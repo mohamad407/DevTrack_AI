@@ -8,6 +8,7 @@ import ForgotPasswordPage from './pages/ForgotPasswordPage.jsx';
 import VerifyEmailPage from './pages/VerifyEmailPage.jsx';
 import PrivacyPage from './pages/PrivacyPage.jsx';
 import TermsPage from './pages/TermsPage.jsx';
+import NotFoundPage from './pages/NotFoundPage.jsx';
 
 import DashboardLayout from './components/layout/DashboardLayout.jsx';
 import DashboardHome from './pages/dashboard/DashboardHome.jsx';
@@ -66,7 +67,7 @@ export default function App() {
           <Route path="admin" element={<AdminPage />} />
         </Route>
 
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </>
   );
