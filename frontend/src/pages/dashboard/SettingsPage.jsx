@@ -5,6 +5,7 @@ import { Download, Trash2, ShieldAlert, Loader2, Save } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../../services/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
+import NotificationToggle from '../../components/common/NotificationToggle.jsx';
 
 const Section = ({ title, description, children }) => (
   <motion.section
@@ -129,6 +130,10 @@ export default function SettingsPage() {
             </button>
           </div>
         </form>
+      </Section>
+
+      <Section title="Notifications" description="Alerts on this device, including when the app is closed.">
+        <NotificationToggle />
       </Section>
 
       <Section
