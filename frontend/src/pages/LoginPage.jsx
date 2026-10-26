@@ -35,12 +35,7 @@ export default function LoginPage() {
 
     setLoading(true);
     try {
-      const user = await loginWithEmail(form);
-      if (!user.emailVerified) {
-        toast('We sent a new verification link to your email', { icon: '📧' });
-        navigate('/verify-email');
-        return;
-      }
+      await loginWithEmail(form);
       toast.success('Welcome back!');
       navigate('/dashboard');
     } catch (err) {
