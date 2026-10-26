@@ -2,7 +2,7 @@ import jwt from 'jsonwebtoken';
 import User from '../models/User.model.js';
 import Project from '../models/Project.model.js';
 
-/** Verifies the backend-issued JWT (minted after Firebase Email OTP verification). */
+/** Verifies the backend-issued JWT (minted after sign-in and email verification). */
 export const protect = async (req, res, next) => {
   try {
     const header = req.headers.authorization || '';
