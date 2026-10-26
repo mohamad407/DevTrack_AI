@@ -1,8 +1,19 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import User from '../models/User.model.js';
+import OtpCode from '../models/OtpCode.model.js';
 import { verifyFirebaseToken } from '../config/firebase.js';
 import { signAccessToken, signRefreshToken } from '../utility/token.js';
+import {
+  generateCode,
+  hashCode,
+  codesMatch,
+  sendOtpEmail,
+  emailConfigured,
+  OTP_TTL_MS,
+  RESEND_MS,
+  MAX_ATTEMPTS,
+} from './otp.js';
 import { protect } from '../middleware/auth.middleware.js';
 
 const router = Router();
@@ -18,13 +29,32 @@ const refreshCookieOptions = {
   maxAge: 30 * 24 * 60 * 60 * 1000,
 };
 
+const httpError = (statusCode, message) => Object.assign(new Error(message), { statusCode });
+
+const sendError = (res, next, err) =>
+  err.statusCode ? res.status(err.statusCode).json({ message: err.message }) : next(err);
+
+// Confirms the Firebase ID token and returns the matching DevTrack user.
+const userFromIdToken = async (idToken) => {
+  if (!idToken) throw httpError(400, 'Missing sign-in token. Please log in again.');
+  let decoded;
+  try {
+    decoded = await verifyFirebaseToken(idToken);
+  } catch {
+    throw httpError(401, 'Your sign-in expired. Please log in again.');
+  }
+  const user = await User.findOne({ firebaseUid: decoded.uid });
+  if (!user) throw httpError(404, 'Account not found. Please sign up again.');
+  return user;
+};
+
 /**
  * POST /api/auth/firebase-session
- * Body: { idToken }
- * Flow: client completes Firebase Email OTP sign-in/sign-up in the browser,
- * gets a Firebase ID token, and exchanges it here for a DevTrack AI session (JWT).
- * Creates the User document on first login. Email verification status is
- * mirrored from Firebase (emailVerified is true once the OTP is confirmed).
+ * Body: { idToken, name? }
+ * The browser signs in with Firebase (email/password or Google) and sends the Firebase ID token here
+ * to get a DevTrack session. Creates the User on first login. Accounts whose email isn't verified get
+ * `requiresVerification` and no session until the 6-digit code is confirmed (see /otp/verify).
+ * Google accounts arrive already verified by Google.
  */
 router.post('/firebase-session', async (req, res, next) => {
   try {
@@ -49,13 +79,9 @@ router.post('/firebase-session', async (req, res, next) => {
     user.lastLoginAt = new Date();
 
     // --- Admin allowlist (env-controlled, no manual DB edits ever needed) ---
-    // Set ADMIN_EMAILS in your backend .env / Render environment as a comma-separated
-    // list, e.g. ADMIN_EMAILS=you@example.com,cofounder@example.com
-    // Anyone logging in with a matching, verified email is automatically promoted
-    // to systemRole: 'admin'. This runs on every login, so adding a new email to the
-    // env var + redeploying is all it takes — no console, no scripts, no Atlas UI.
-    // It only ever promotes UP, never demotes — removing an email from the list does
-    // not strip existing admins; use the Admin Panel's own role management for that.
+    // Set ADMIN_EMAILS in your backend environment as a comma-separated list, e.g.
+    // ADMIN_EMAILS=you@example.com,cofounder@example.com
+    // Matching, verified emails are promoted to systemRole 'admin' on login. It only ever promotes.
     const adminAllowlist = (process.env.ADMIN_EMAILS || '')
       .split(',')
       .map((e) => e.trim().toLowerCase())
@@ -70,7 +96,7 @@ router.post('/firebase-session', async (req, res, next) => {
     if (!user.isEmailVerified) {
       return res.status(200).json({
         requiresVerification: true,
-        message: 'Please verify your email via the OTP link before accessing the dashboard.',
+        message: 'Please enter the 6-digit code we emailed you to verify your account.',
       });
     }
 
@@ -93,6 +119,98 @@ router.post('/firebase-session', async (req, res, next) => {
     });
   } catch (err) {
     next(err);
+  }
+});
+
+/**
+ * POST /api/auth/otp/send
+ * Body: { idToken }
+ * Emails a new 6-digit verification code. One code per user, valid for 10 minutes,
+ * with at least 60 seconds between codes.
+ */
+router.post('/otp/send', async (req, res, next) => {
+  try {
+    const user = await userFromIdToken(req.body.idToken);
+    if (user.isEmailVerified) return res.json({ message: 'Email is already verified', alreadyVerified: true });
+    if (!emailConfigured()) {
+      throw httpError(503, 'Email sending is not set up yet. Please try again later.');
+    }
+
+    const existing = await OtpCode.findOne({ user: user._id });
+    if (existing) {
+      const wait = Math.ceil((existing.lastSentAt.getTime() + RESEND_MS - Date.now()) / 1000);
+      if (wait > 0) {
+        return res.status(429).json({ message: 'Please wait before requesting another code', retryAfter: wait });
+      }
+    }
+
+    const code = generateCode();
+    await OtpCode.findOneAndUpdate(
+      { user: user._id },
+      {
+        codeHash: hashCode(code, user._id),
+        attempts: 0,
+        expiresAt: new Date(Date.now() + OTP_TTL_MS),
+        lastSentAt: new Date(),
+      },
+      { upsert: true }
+    );
+
+    try {
+      await sendOtpEmail({ to: user.email, name: user.name, code });
+    } catch (mailErr) {
+      // Remove the code so the user can retry straight away instead of waiting out the cooldown
+      await OtpCode.deleteOne({ user: user._id });
+      console.error('OTP email failed:', mailErr.message);
+      throw httpError(502, 'We could not send the email. Please try again in a moment.');
+    }
+
+    res.json({ message: 'Code sent', resendInSeconds: Math.round(RESEND_MS / 1000) });
+  } catch (err) {
+    sendError(res, next, err);
+  }
+});
+
+/**
+ * POST /api/auth/otp/verify
+ * Body: { idToken, code }
+ * Checks the 6-digit code. Five wrong guesses cancel the code, so a new one is needed.
+ */
+router.post('/otp/verify', async (req, res, next) => {
+  try {
+    const user = await userFromIdToken(req.body.idToken);
+    const code = String(req.body.code || '');
+    if (!/^\d{6}$/.test(code)) return res.status(400).json({ message: 'Enter the 6-digit code' });
+    if (user.isEmailVerified) return res.json({ message: 'Email verified' });
+
+    const otp = await OtpCode.findOne({ user: user._id });
+    if (!otp || otp.expiresAt < new Date()) {
+      return res.status(400).json({ message: 'This code has expired. Request a new one.' });
+    }
+    if (otp.attempts >= MAX_ATTEMPTS) {
+      await OtpCode.deleteOne({ _id: otp._id });
+      return res.status(429).json({ message: 'Too many wrong attempts. Request a new code.' });
+    }
+
+    if (!codesMatch(hashCode(code, user._id), otp.codeHash)) {
+      otp.attempts += 1;
+      await otp.save();
+      const left = MAX_ATTEMPTS - otp.attempts;
+      if (left <= 0) {
+        await OtpCode.deleteOne({ _id: otp._id });
+        return res.status(429).json({ message: 'Too many wrong attempts. Request a new code.' });
+      }
+      return res.status(400).json({
+        message: `That code isn't right. ${left} attempt${left === 1 ? '' : 's'} left.`,
+      });
+    }
+
+    await OtpCode.deleteOne({ _id: otp._id });
+    user.isEmailVerified = true;
+    await user.save();
+    res.json({ message: 'Email verified' });
+  } catch (err) {
+    sendError(res, next, err);
   }
 });
 
@@ -122,9 +240,8 @@ router.post('/logout', (req, res) => {
 });
 
 /**
- * Forgot password is handled client-side via Firebase's
- * sendPasswordResetEmail() (see frontend/src/services/firebase.js).
- * This endpoint just confirms a user exists, for UX messaging purposes.
+ * Forgot password is handled client-side via Firebase's sendPasswordResetEmail().
+ * This endpoint only confirms whether an account exists, for UX messaging.
  */
 router.post('/forgot-password/check', async (req, res) => {
   const { email } = req.body;
@@ -134,11 +251,7 @@ router.post('/forgot-password/check', async (req, res) => {
 
 /**
  * GET /api/auth/me - current session profile
- * Returns an explicit whitelist of fields only — never the raw Mongoose document.
- * This is deliberate defense-in-depth: even though passwordHash etc. already use
- * `select: false` on the schema, this guarantees that if someone adds a new
- * sensitive field to User.model.js later and forgets to exclude it, it still
- * can't leak over this response by accident.
+ * Returns an explicit whitelist of fields only, never the raw Mongoose document.
  */
 router.get('/me', protect, async (req, res) => {
   const { _id, name, email, avatarUrl, systemRole, isEmailVerified, status, lastLoginAt } = req.user;
