@@ -28,8 +28,9 @@ import LoadingScreen from './components/common/LoadingScreen.jsx';
 import OfflineBanner from './components/common/OfflineBanner.jsx';
 
 const ProtectedRoute = ({ children }) => {
-  const { user, loading } = useAuth();
+  const { user, loading, needsVerification } = useAuth();
   if (loading) return <LoadingScreen />;
+  if (needsVerification) return <Navigate to="/verify-email" replace />;
   if (!user) return <Navigate to="/login" replace />;
   return children;
 };
