@@ -4,7 +4,7 @@ let initialized = false;
 
 /**
  * Lazily initializes Firebase Admin using service account credentials from env vars.
- * Used to verify the Firebase ID token issued after a successful Email OTP
+ * Used to verify the Firebase ID token issued after a successful sign-in
  * sign-in on the client, before we mint our own backend JWT.
  */
 export const getFirebaseAdmin = () => {
