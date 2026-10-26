@@ -38,6 +38,10 @@ const getTransporter = () => {
       port,
       secure: port === 465,
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+      // Fail fast instead of hanging. Nodemailer's defaults can wait for many minutes.
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000,
     });
   }
   return transporter;
