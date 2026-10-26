@@ -3,6 +3,8 @@ import {
   getAuth,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider,
   sendEmailVerification,
   sendPasswordResetEmail,
   confirmPasswordReset,
@@ -12,8 +14,6 @@ import {
 } from 'firebase/auth';
 
 // Fill these in from Firebase Console -> Project Settings -> General -> Your apps -> SDK config.
-// Enable "Email/Password" provider, and turn on "Email link (passwordless sign-in)" or
-// use Email/Password + sendEmailVerification for the OTP-style verification link flow used here.
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -26,19 +26,11 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 
-/**
- * "Email OTP" here is implemented as Firebase's email verification link flow:
- * 1. signUpWithEmail() creates the account and immediately emails a one-time verification link.
- * 2. The user clicks the link (or pastes the emailed code into the OTP screen, if you wire up
- *    a custom OTP code via Firebase Auth's email link sign-in instead — see comment below).
- * 3. Once verified, loginWithEmail() succeeds and the backend accepts the session.
- *
- * For a numeric-code OTP UX (rather than a magic link), swap this for Firebase's
- * `PhoneAuthProvider`-style flow using a custom email OTP provider (e.g. Firebase Extensions'
- * "Trigger Email" + Firestore-stored codes), since core Firebase Auth doesn't natively send
- * numeric email codes. This scaffold uses the email-link verification approach, which is
- * natively supported and secure by default.
- */
+const googleProvider = new GoogleAuthProvider();
+// Always show the account chooser, so people with several Google accounts pick the right one
+googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+/** Email + password sign-up. Sends a verification link before the dashboard unlocks. */
 export const signUpWithEmail = async ({ name, email, password }) => {
   const cred = await createUserWithEmailAndPassword(auth, email, password);
   if (name) await updateProfile(cred.user, { displayName: name });
@@ -52,6 +44,40 @@ export const loginWithEmail = async ({ email, password }) => {
     await sendEmailVerification(cred.user);
   }
   return cred.user;
+};
+
+/**
+ * Google sign-in. Google accounts are already verified, so no verification step is needed.
+ * AuthContext picks up the new sign-in and creates the DevTrack session automatically.
+ */
+export const signInWithGoogle = async () => {
+  const cred = await signInWithPopup(auth, googleProvider);
+  return cred.user;
+};
+
+// Plain-English messages for Firebase error codes. A null value means "say nothing"
+// (for example, the user closed the Google window on purpose).
+const AUTH_MESSAGES = {
+  'auth/invalid-credential': 'Email or password is incorrect.',
+  'auth/wrong-password': 'Email or password is incorrect.',
+  'auth/user-not-found': 'Email or password is incorrect.',
+  'auth/invalid-email': 'That email address doesn\u2019t look right.',
+  'auth/email-already-in-use': 'An account with this email already exists. Try logging in instead.',
+  'auth/weak-password': 'Please choose a stronger password (at least 6 characters).',
+  'auth/too-many-requests': 'Too many attempts. Please wait a few minutes and try again.',
+  'auth/network-request-failed': 'Network problem. Check your connection and try again.',
+  'auth/popup-blocked': 'Your browser blocked the Google window. Allow pop-ups for this site and try again.',
+  'auth/popup-closed-by-user': null,
+  'auth/cancelled-popup-request': null,
+  'auth/account-exists-with-different-credential':
+    'This email already uses a password. Log in with your email and password instead.',
+  'auth/user-disabled': 'This account has been disabled. Please contact support.',
+};
+
+export const friendlyAuthError = (err) => {
+  const code = err?.code;
+  if (code && Object.prototype.hasOwnProperty.call(AUTH_MESSAGES, code)) return AUTH_MESSAGES[code];
+  return 'Something went wrong. Please try again.';
 };
 
 export const resendVerificationEmail = async () => {
