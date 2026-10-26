@@ -16,8 +16,8 @@ export const generateCode = () =>
   String(crypto.randomInt(0, 10 ** OTP_LENGTH)).padStart(OTP_LENGTH, '0');
 
 /** Keyed hash of the code, bound to the user, so a leaked database can't be used to guess codes. */
-export const hashCode = (code, userId) =>
-  crypto.createHmac('sha256', secret()).update(`${userId}:${code}`).digest('hex');
+export const hashCode = (code, userId, purpose = 'verify') =>
+  crypto.createHmac('sha256', secret()).update(`${purpose}:${userId}:${code}`).digest('hex');
 
 /** Constant-time comparison, so response timing doesn't leak how much of a code matched. */
 export const codesMatch = (a, b) => {
@@ -46,21 +46,27 @@ const getTransporter = () => {
 const escapeHtml = (s = '') =>
   String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-export const sendOtpEmail = async ({ to, name, code }) => {
+export const sendOtpEmail = async ({ to, name, code, purpose = 'verify' }) => {
   const safeName = escapeHtml(name || 'there');
+  const isReset = purpose === 'reset';
+  const what = isReset ? 'password reset' : 'verification';
+  const heading = isReset ? 'Reset your password' : 'Verify your email';
+  const action = isReset
+    ? 'enter this code to choose a new password:'
+    : 'enter this code to finish setting up your account:';
   await getTransporter().sendMail({
     from: process.env.SMTP_FROM || `DevTrack AI <${process.env.SMTP_USER}>`,
     to,
-    subject: `${code} is your DevTrack AI verification code`,
+    subject: `${code} is your DevTrack AI ${what} code`,
     text:
       `Hi ${name || 'there'},\n\n` +
-      `Your DevTrack AI verification code is ${code}.\n` +
+      `Your DevTrack AI ${what} code is ${code}.\n` +
       `It expires in 10 minutes.\n\n` +
       `If you didn't create an account, you can ignore this email.`,
     html: `
       <div style="font-family:Arial,sans-serif;max-width:460px;margin:0 auto;padding:24px;color:#111">
-        <h2 style="margin:0 0 12px">Verify your email</h2>
-        <p>Hi ${safeName}, enter this code in DevTrack AI to finish setting up your account:</p>
+        <h2 style="margin:0 0 12px">${heading}</h2>
+        <p>Hi ${safeName}, ${action}</p>
         <p style="font-size:32px;font-weight:700;letter-spacing:8px;margin:20px 0">${code}</p>
         <p style="color:#555;font-size:13px">This code expires in 10 minutes. If you didn't request it, you can ignore this email.</p>
       </div>`,
