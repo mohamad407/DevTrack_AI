@@ -5,8 +5,6 @@ import {
   signInWithEmailAndPassword,
   signInWithPopup,
   GoogleAuthProvider,
-  sendPasswordResetEmail,
-  confirmPasswordReset,
   onAuthStateChanged,
   signOut,
   updateProfile,
@@ -81,8 +79,6 @@ export const friendlyAuthError = (err) => {
   return 'Something went wrong. Please try again.';
 };
 
-export const requestPasswordReset = (email) => sendPasswordResetEmail(auth, email);
-export const confirmReset = (code, newPassword) => confirmPasswordReset(auth, code, newPassword);
 
 export const logout = () => signOut(auth);
 
