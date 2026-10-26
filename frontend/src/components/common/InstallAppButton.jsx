@@ -20,14 +20,14 @@ export default function InstallAppButton({ compact = false }) {
       <button
         type="button"
         onClick={handleClick}
-        className={
-          compact
-            ? 'flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-medium transition-colors hover:bg-white/[0.08]'
-            : 'btn-primary text-sm'
-        }
+        className={`group relative inline-flex items-center gap-2 overflow-hidden rounded-xl bg-aurora font-semibold text-white shadow-glow transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_32px_rgba(124,58,237,0.55)] active:translate-y-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-light focus-visible:ring-offset-2 focus-visible:ring-offset-void ${
+          compact ? 'px-4 py-2 text-sm' : 'px-5 py-2.5 text-sm'
+        }`}
       >
-        <Download size={16} />
-        {compact ? 'Install' : 'Install app'}
+        {/* soft shine that sweeps across on hover */}
+        <span className="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/25 to-transparent transition-transform duration-700 group-hover:translate-x-full" />
+        <Download size={16} className="relative transition-transform duration-300 group-hover:translate-y-0.5" />
+        <span className="relative">{compact ? 'Install' : 'Install app'}</span>
       </button>
       {helpOpen && <InstallHelp isIOS={isIOS} onClose={() => setHelpOpen(false)} />}
     </>
