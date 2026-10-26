@@ -2,7 +2,7 @@ import { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import User from '../models/User.model.js';
 import OtpCode from '../models/OtpCode.model.js';
-import { verifyFirebaseToken } from '../config/firebase.js';
+import { verifyFirebaseToken, getFirebaseAdmin } from '../config/firebase.js';
 import { signAccessToken, signRefreshToken } from '../utility/token.js';
 import {
   generateCode,
@@ -46,6 +46,67 @@ const userFromIdToken = async (idToken) => {
   const user = await User.findOne({ firebaseUid: decoded.uid });
   if (!user) throw httpError(404, 'Account not found. Please sign up again.');
   return user;
+};
+
+// Seconds the user must still wait before another code (0 when they can request one now).
+const cooldownLeft = async (user) => {
+  const existing = await OtpCode.findOne({ user: user._id });
+  if (!existing) return 0;
+  return Math.max(0, Math.ceil((existing.lastSentAt.getTime() + RESEND_MS - Date.now()) / 1000));
+};
+
+// Creates a new code for this purpose and emails it. The previous code is replaced.
+const issueCode = async (user, purpose) => {
+  const code = generateCode();
+  await OtpCode.findOneAndUpdate(
+    { user: user._id },
+    {
+      purpose,
+      codeHash: hashCode(code, user._id, purpose),
+      attempts: 0,
+      expiresAt: new Date(Date.now() + OTP_TTL_MS),
+      lastSentAt: new Date(),
+    },
+    { upsert: true }
+  );
+
+  try {
+    await sendOtpEmail({ to: user.email, name: user.name, code, purpose });
+  } catch (mailErr) {
+    // Remove the code so the user can retry straight away instead of waiting out the cooldown
+    await OtpCode.deleteOne({ user: user._id });
+    console.error('OTP email failed:', mailErr.message);
+    throw httpError(502, 'We could not send the email. Please try again in a moment.');
+  }
+};
+
+/**
+ * Checks a submitted code. Returns null when it is correct (and consumes it),
+ * or { status, message } when it is wrong, expired, or locked out.
+ */
+const checkCode = async (user, purpose, code) => {
+  const otp = await OtpCode.findOne({ user: user._id });
+  if (!otp || otp.purpose !== purpose || otp.expiresAt < new Date()) {
+    return { status: 400, message: 'This code has expired. Request a new one.' };
+  }
+  if (otp.attempts >= MAX_ATTEMPTS) {
+    await OtpCode.deleteOne({ _id: otp._id });
+    return { status: 429, message: 'Too many wrong attempts. Request a new code.' };
+  }
+
+  if (!codesMatch(hashCode(code, user._id, purpose), otp.codeHash)) {
+    otp.attempts += 1;
+    await otp.save();
+    const left = MAX_ATTEMPTS - otp.attempts;
+    if (left <= 0) {
+      await OtpCode.deleteOne({ _id: otp._id });
+      return { status: 429, message: 'Too many wrong attempts. Request a new code.' };
+    }
+    return { status: 400, message: `That code isn't right. ${left} attempt${left === 1 ? '' : 's'} left.` };
+  }
+
+  await OtpCode.deleteOne({ _id: otp._id });
+  return null;
 };
 
 /**
@@ -122,60 +183,24 @@ router.post('/firebase-session', async (req, res, next) => {
   }
 });
 
-/**
- * POST /api/auth/otp/send
- * Body: { idToken }
- * Emails a new 6-digit verification code. One code per user, valid for 10 minutes,
- * with at least 60 seconds between codes.
- */
+/** POST /api/auth/otp/send - body { idToken }. Emails a 6-digit code to verify a new account. */
 router.post('/otp/send', async (req, res, next) => {
   try {
     const user = await userFromIdToken(req.body.idToken);
     if (user.isEmailVerified) return res.json({ message: 'Email is already verified', alreadyVerified: true });
-    if (!emailConfigured()) {
-      throw httpError(503, 'Email sending is not set up yet. Please try again later.');
-    }
+    if (!emailConfigured()) throw httpError(503, 'Email sending is not set up yet. Please try again later.');
 
-    const existing = await OtpCode.findOne({ user: user._id });
-    if (existing) {
-      const wait = Math.ceil((existing.lastSentAt.getTime() + RESEND_MS - Date.now()) / 1000);
-      if (wait > 0) {
-        return res.status(429).json({ message: 'Please wait before requesting another code', retryAfter: wait });
-      }
-    }
+    const wait = await cooldownLeft(user);
+    if (wait > 0) return res.status(429).json({ message: 'Please wait before requesting another code', retryAfter: wait });
 
-    const code = generateCode();
-    await OtpCode.findOneAndUpdate(
-      { user: user._id },
-      {
-        codeHash: hashCode(code, user._id),
-        attempts: 0,
-        expiresAt: new Date(Date.now() + OTP_TTL_MS),
-        lastSentAt: new Date(),
-      },
-      { upsert: true }
-    );
-
-    try {
-      await sendOtpEmail({ to: user.email, name: user.name, code });
-    } catch (mailErr) {
-      // Remove the code so the user can retry straight away instead of waiting out the cooldown
-      await OtpCode.deleteOne({ user: user._id });
-      console.error('OTP email failed:', mailErr.message);
-      throw httpError(502, 'We could not send the email. Please try again in a moment.');
-    }
-
+    await issueCode(user, 'verify');
     res.json({ message: 'Code sent', resendInSeconds: Math.round(RESEND_MS / 1000) });
   } catch (err) {
     sendError(res, next, err);
   }
 });
 
-/**
- * POST /api/auth/otp/verify
- * Body: { idToken, code }
- * Checks the 6-digit code. Five wrong guesses cancel the code, so a new one is needed.
- */
+/** POST /api/auth/otp/verify - body { idToken, code }. Confirms the code and marks the email verified. */
 router.post('/otp/verify', async (req, res, next) => {
   try {
     const user = await userFromIdToken(req.body.idToken);
@@ -183,32 +208,94 @@ router.post('/otp/verify', async (req, res, next) => {
     if (!/^\d{6}$/.test(code)) return res.status(400).json({ message: 'Enter the 6-digit code' });
     if (user.isEmailVerified) return res.json({ message: 'Email verified' });
 
-    const otp = await OtpCode.findOne({ user: user._id });
-    if (!otp || otp.expiresAt < new Date()) {
-      return res.status(400).json({ message: 'This code has expired. Request a new one.' });
-    }
-    if (otp.attempts >= MAX_ATTEMPTS) {
-      await OtpCode.deleteOne({ _id: otp._id });
-      return res.status(429).json({ message: 'Too many wrong attempts. Request a new code.' });
-    }
+    const problem = await checkCode(user, 'verify', code);
+    if (problem) return res.status(problem.status).json({ message: problem.message });
 
-    if (!codesMatch(hashCode(code, user._id), otp.codeHash)) {
-      otp.attempts += 1;
-      await otp.save();
-      const left = MAX_ATTEMPTS - otp.attempts;
-      if (left <= 0) {
-        await OtpCode.deleteOne({ _id: otp._id });
-        return res.status(429).json({ message: 'Too many wrong attempts. Request a new code.' });
-      }
-      return res.status(400).json({
-        message: `That code isn't right. ${left} attempt${left === 1 ? '' : 's'} left.`,
-      });
-    }
-
-    await OtpCode.deleteOne({ _id: otp._id });
     user.isEmailVerified = true;
     await user.save();
     res.json({ message: 'Email verified' });
+  } catch (err) {
+    sendError(res, next, err);
+  }
+});
+
+/*
+ * Password reset, step 1: POST /api/auth/password-reset/send  body { email }
+ * Always answers the same way, so this can't be used to find out which emails have accounts.
+ */
+const RESET_SENT = { message: 'If an account exists for that email, we have sent a 6-digit code.' };
+
+router.post('/password-reset/send', async (req, res, next) => {
+  try {
+    const email = String(req.body.email || '').toLowerCase().trim();
+    const user = email ? await User.findOne({ email }) : null;
+    if (!user?.firebaseUid) return res.json(RESET_SENT);
+    if ((await cooldownLeft(user)) > 0) return res.json(RESET_SENT);
+
+    if (!emailConfigured()) throw httpError(503, 'Email sending is not set up yet. Please try again later.');
+    await issueCode(user, 'reset');
+    res.json(RESET_SENT);
+  } catch (err) {
+    sendError(res, next, err);
+  }
+});
+
+/* Password reset, step 2: POST /api/auth/password-reset/verify  body { email, code } -> { resetToken } */
+router.post('/password-reset/verify', async (req, res, next) => {
+  try {
+    const email = String(req.body.email || '').toLowerCase().trim();
+    const code = String(req.body.code || '');
+    const invalid = { message: 'That code is incorrect or has expired.' };
+    if (!/^\d{6}$/.test(code)) return res.status(400).json({ message: 'Enter the 6-digit code' });
+
+    const user = email ? await User.findOne({ email }) : null;
+    if (!user) return res.status(400).json(invalid);
+
+    const problem = await checkCode(user, 'reset', code);
+    if (problem) return res.status(problem.status).json({ message: problem.message });
+
+    // Short-lived token that proves the code was entered. Only the reset endpoint accepts it.
+    const resetToken = jwt.sign(
+      { sub: String(user._id), purpose: 'password-reset' },
+      process.env.JWT_REFRESH_SECRET,
+      { expiresIn: '10m' }
+    );
+    res.json({ resetToken });
+  } catch (err) {
+    sendError(res, next, err);
+  }
+});
+
+/* Password reset, step 3: POST /api/auth/password-reset/complete  body { resetToken, newPassword } */
+router.post('/password-reset/complete', async (req, res, next) => {
+  try {
+    const { resetToken, newPassword } = req.body;
+    if (typeof newPassword !== 'string' || newPassword.length < 6) {
+      return res.status(400).json({ message: 'Your new password needs at least 6 characters.' });
+    }
+
+    let payload;
+    try {
+      payload = jwt.verify(String(resetToken || ''), process.env.JWT_REFRESH_SECRET);
+      if (payload.purpose !== 'password-reset') throw new Error('wrong token');
+    } catch {
+      return res.status(401).json({ message: 'This reset has expired. Please start again.' });
+    }
+
+    const user = await User.findById(payload.sub);
+    if (!user?.firebaseUid) return res.status(404).json({ message: 'Account not found.' });
+
+    try {
+      await getFirebaseAdmin().auth().updateUser(user.firebaseUid, { password: newPassword });
+    } catch (fbErr) {
+      if (fbErr.code === 'auth/invalid-password') {
+        return res.status(400).json({ message: 'Please choose a stronger password (at least 6 characters).' });
+      }
+      console.error('Password update failed:', fbErr.message);
+      return res.status(503).json({ message: 'We could not update your password right now. Please try again.' });
+    }
+
+    res.json({ message: 'Password updated. You can log in now.' });
   } catch (err) {
     sendError(res, next, err);
   }
@@ -239,10 +326,7 @@ router.post('/logout', (req, res) => {
   res.json({ message: 'Logged out' });
 });
 
-/**
- * Forgot password is handled client-side via Firebase's sendPasswordResetEmail().
- * This endpoint only confirms whether an account exists, for UX messaging.
- */
+/** Confirms whether an account exists (kept for internal use; the reset page no longer calls it). */
 router.post('/forgot-password/check', async (req, res) => {
   const { email } = req.body;
   const exists = await User.exists({ email: email?.toLowerCase() });
