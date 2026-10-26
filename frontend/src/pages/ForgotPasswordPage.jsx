@@ -39,11 +39,16 @@ export default function ForgotPasswordPage() {
     if (!EMAIL_RE.test(email.trim())) return fail('Please enter a valid email address.');
     setLoading(true);
     try {
-      await api.post('/auth/password-reset/send', { email: email.trim() });
+      // Give the server up to 25 seconds; the email step can be slow on the first request
+      await api.post('/auth/password-reset/send', { email: email.trim() }, { timeout: 25000 });
       setCooldown(RESEND_SECONDS);
       setStep('code');
     } catch (err) {
-      fail(err.response?.data?.message || 'Could not send the code. Please try again.');
+      if (err.code === 'ECONNABORTED') {
+        fail('The server is taking too long. Please wait a moment and try again.');
+      } else {
+        fail(err.response?.data?.message || 'Could not send the code. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
