@@ -31,6 +31,13 @@ const refreshCookieOptions = {
 
 const httpError = (statusCode, message) => Object.assign(new Error(message), { statusCode });
 
+// Rejects if a promise takes longer than ms, so a stuck call can't keep the user waiting forever.
+const withTimeout = (promise, ms) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timed out')), ms)),
+  ]);
+
 const sendError = (res, next, err) =>
   err.statusCode ? res.status(err.statusCode).json({ message: err.message }) : next(err);
 
@@ -71,7 +78,7 @@ const issueCode = async (user, purpose) => {
   );
 
   try {
-    await sendOtpEmail({ to: user.email, name: user.name, code, purpose });
+    await withTimeout(sendOtpEmail({ to: user.email, name: user.name, code, purpose }), 20000);
   } catch (mailErr) {
     // Remove the code so the user can retry straight away instead of waiting out the cooldown
     await OtpCode.deleteOne({ user: user._id });
