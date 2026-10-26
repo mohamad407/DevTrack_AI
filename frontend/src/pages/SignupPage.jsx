@@ -40,7 +40,7 @@ export default function SignupPage() {
     setLoading(true);
     try {
       await signUpWithEmail({ ...form, name: form.name.trim() });
-      toast.success('Almost there! Check your email to verify your account.');
+      toast.success('Almost there! Enter the 6-digit code we emailed you.');
       navigate('/verify-email');
     } catch (err) {
       showError(friendlyAuthError(err), err?.code);
@@ -186,7 +186,7 @@ export default function SignupPage() {
           </button>
 
           <p className="text-center text-xs text-ink-500">
-            We&apos;ll email you a verification link. You&apos;ll confirm it before the dashboard unlocks.
+            We&apos;ll email you a 6-digit code. Enter it to unlock your dashboard.
           </p>
         </form>
       </div>
