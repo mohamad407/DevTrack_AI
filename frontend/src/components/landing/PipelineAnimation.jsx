@@ -1,4 +1,4 @@
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 
 const stages = [
   { label: 'Backlog', x: 40 },
@@ -10,13 +10,76 @@ const stages = [
 ];
 
 const TRACK_Y = 90;
+const CYCLE = 12; // seconds for one story to travel the whole track
+const REST = 0.45; // share of each leg spent resting at a stage before moving on
+
+const TOKENS = [
+  { id: 'DTA-12', owner: 'AS', color: '#7C5CFC' },
+  { id: 'DTA-19', owner: 'MK', color: '#22D3EE' },
+  { id: 'DTA-27', owner: 'RJ', color: '#34D399' },
+];
+
+const xs = stages.map((s) => s.x);
+const legs = xs.length - 1;
+
+// One loop of movement: rest at each stage, then glide to the next. Returned as keyframes for framer-motion.
+const buildPath = () => {
+  const legTime = 1 / legs;
+  const frames = [{ t: 0, x: xs[0] }];
+  for (let i = 0; i < legs; i++) {
+    frames.push({ t: i * legTime + legTime * REST, x: xs[i] }); // rest at stage i
+    frames.push({ t: (i + 1) * legTime, x: xs[i + 1] }); // glide to stage i+1
+  }
+  return {
+    times: frames.map((f) => f.t),
+    x: frames.map((f) => f.x),
+    // Holds use linear easing (no movement); glides use a soft ease in and out
+    ease: frames.slice(1).map((f, k) => (frames[k].x === f.x ? 'linear' : 'easeInOut')),
+  };
+};
+
+const PATH = buildPath();
+
+function StoryCard({ token, index, reduce }) {
+  // Launch the cards one after another so they don't travel as a clump
+  const delay = (index * CYCLE) / TOKENS.length;
+  return (
+    <motion.g
+      initial={{ x: xs[0] }}
+      animate={reduce ? { x: xs[index] } : { x: PATH.x }}
+      transition={
+        reduce
+          ? { duration: 0 }
+          : { duration: CYCLE, repeat: Infinity, times: PATH.times, ease: PATH.ease, delay }
+      }
+    >
+      {/* connector from the card down to the track */}
+      <line x1="0" y1={TRACK_Y - 18} x2="0" y2={TRACK_Y - 8} stroke={token.color} strokeWidth="1.5" opacity="0.7" />
+      {/* the story card */}
+      <rect x="-50" y={TRACK_Y - 50} width="100" height="32" rx="8" fill={token.color} opacity="0.92" filter="url(#nodeGlow)" />
+      <rect x="-50" y={TRACK_Y - 50} width="5" height="32" rx="2.5" fill="#FFFFFF" opacity="0.55" />
+      <text x="-38" y={TRACK_Y - 30} fontSize="11" fontWeight="600" fontFamily="Inter, sans-serif" fill="#0D1220">
+        {token.id}
+      </text>
+      <text x="-38" y={TRACK_Y - 19} fontSize="9" fontFamily="Inter, sans-serif" fill="#0D1220" opacity="0.75">
+        Story
+      </text>
+      {/* owner badge */}
+      <circle cx="36" cy={TRACK_Y - 34} r="10" fill="#0D1220" stroke="#FFFFFF" strokeOpacity="0.35" />
+      <text x="36" y={TRACK_Y - 30} textAnchor="middle" fontSize="8" fontWeight="700" fontFamily="Inter, sans-serif" fill="#E2E8F0">
+        {token.owner}
+      </text>
+    </motion.g>
+  );
+}
 
 /**
- * Signature visual: a single continuous "sprint pipeline" track running the full width
- * of the hero — the fusion of an Agile Kanban flow and a CI/CD pipeline in one line.
- * Glowing cards travel node to node; a build pulse trails behind them, echoing pipeline runs.
+ * Signature visual: one continuous sprint pipeline. Story cards rest at each column, then glide on.
+ * A light ring travels through each stage as cards arrive, so the stages look alive.
  */
 export default function PipelineAnimation() {
+  const reduce = useReducedMotion();
+
   return (
     <div className="relative mx-auto w-full max-w-5xl overflow-x-auto">
       <svg viewBox="0 0 1000 180" className="min-w-[720px] w-full" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -37,14 +100,37 @@ export default function PipelineAnimation() {
 
         {/* base track */}
         <line x1="40" y1={TRACK_Y} x2="940" y2={TRACK_Y} stroke="rgba(255,255,255,0.08)" strokeWidth="2" />
-        {/* animated flowing dashes */}
+        {/* flowing dashes along the track */}
         <line
           x1="40" y1={TRACK_Y} x2="940" y2={TRACK_Y}
           stroke="url(#trackGrad)" strokeWidth="2" strokeDasharray="10 10"
           className="animate-pipeline-flow"
         />
 
-        {stages.map((s, i) => (
+        {/* a ring pulses at each stage in turn, timed with the cards' arrival */}
+        {!reduce &&
+          stages.map((s, i) => (
+            <motion.circle
+              key={`halo-${s.label}`}
+              cx={s.x}
+              cy={TRACK_Y}
+              r="7"
+              fill="none"
+              stroke="#22D3EE"
+              strokeWidth="1.5"
+              animate={{ r: [7, 22, 22], opacity: [0.8, 0, 0] }}
+              transition={{
+                duration: CYCLE,
+                repeat: Infinity,
+                times: [0, 0.12, 1],
+                ease: 'easeOut',
+                delay: (i * CYCLE) / legs,
+              }}
+            />
+          ))}
+
+        {/* stations */}
+        {stages.map((s) => (
           <g key={s.label}>
             <circle cx={s.x} cy={TRACK_Y} r="7" fill="#0D1220" stroke="url(#trackGrad)" strokeWidth="2" filter="url(#nodeGlow)" />
             <text x={s.x} y={TRACK_Y + 34} textAnchor="middle" fontSize="13" fontFamily="Inter, sans-serif" fill="#94A3B8">
@@ -53,22 +139,9 @@ export default function PipelineAnimation() {
           </g>
         ))}
 
-        {/* traveling glowing card tokens */}
-        {[0, 1, 2].map((i) => (
-          <motion.g
-            key={i}
-            initial={{ x: 40 }}
-            animate={{ x: stages.map((s) => s.x) }}
-            transition={{
-              duration: 7,
-              repeat: Infinity,
-              ease: 'easeInOut',
-              delay: i * 2.3,
-              times: [0, 0.2, 0.4, 0.6, 0.8, 1],
-            }}
-          >
-            <rect x="-16" y={TRACK_Y - 34} width="32" height="20" rx="6" fill={i === 0 ? '#7C5CFC' : i === 1 ? '#22D3EE' : '#34D399'} filter="url(#nodeGlow)" opacity="0.9" />
-          </motion.g>
+        {/* story cards */}
+        {TOKENS.map((token, i) => (
+          <StoryCard key={token.id} token={token} index={i} reduce={reduce} />
         ))}
       </svg>
     </div>
